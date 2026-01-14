@@ -1,0 +1,72 @@
+# Argus MCP Server - Model Context Protocol for AI IDEs
+# https://heyargus.ai
+#
+# This MCP server allows AI coding assistants (Claude Code, Cursor, Windsurf)
+# to interact with Argus E2E testing capabilities directly.
+#
+# Deploy with: npm run deploy
+
+name = "argus-mcp"
+main = "src/index.ts"
+compatibility_flags = ["nodejs_compat"]
+compatibility_date = "2025-09-17"
+
+# Enable observability for debugging
+[observability]
+enabled = true
+
+# Workers AI binding for free-tier AI
+[ai]
+binding = "AI"
+
+# Environment variables
+[vars]
+ENVIRONMENT = "production"
+# Worker URL - Browser automation only (act, extract, observe)
+ARGUS_API_URL = "https://argus-api.samuelvinay-kumar.workers.dev"
+# Brain URL - Intelligence (test planning, quality, webhooks)
+ARGUS_BRAIN_URL = "https://argus-brain-production.up.railway.app"
+
+# Secrets (set via `wrangler secret put <NAME>`):
+# - API_TOKEN (for authenticating with Argus API)
+# - ANTHROPIC_API_KEY (optional, for enhanced AI analysis)
+
+# KV namespace for auth state persistence
+[[kv_namespaces]]
+binding = "AUTH_STATE"
+id = "3a08b855994d4b3e99a14062744109e8"
+
+# Durable Objects for OAuth state management
+[[durable_objects.bindings]]
+name = "MCP_OAUTH"
+class_name = "MCPOAuth"
+
+# Durable Object for MCP Agent (manages per-connection state with SQLite)
+[[durable_objects.bindings]]
+name = "MCP_OBJECT"
+class_name = "ArgusMcpAgentSQLite"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MCPOAuth"]
+
+[[migrations]]
+tag = "v2"
+
+[[migrations]]
+tag = "v3"
+
+[[migrations]]
+tag = "v4"
+
+[[migrations]]
+tag = "v5"
+deleted_classes = ["ArgusMcpAgentDO"]
+
+[[migrations]]
+tag = "v6"
+deleted_classes = ["ArgusMcpAgent"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["ArgusMcpAgentSQLite"]
