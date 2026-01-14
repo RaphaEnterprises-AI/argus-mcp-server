@@ -1,5 +1,8 @@
 # Argus MCP Server
 
+[![Release](https://img.shields.io/github/v/release/RaphaEnterprises-AI/argus-mcp-server)](https://github.com/RaphaEnterprises-AI/argus-mcp-server/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Model Context Protocol (MCP) server for Argus E2E Testing Agent. This allows AI coding assistants to interact with Argus testing capabilities directly.
 
 ## Supported AI IDEs
