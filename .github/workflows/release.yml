@@ -16,18 +16,44 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
-      - name: Release Please
-        id: release
+      - name: Run release-please
         uses: googleapis/release-please-action@v4
+        id: release
         with:
-          token: ${{ secrets.RELEASE_PAT }}
+          # Use PAT to allow triggering other workflows (like Claude Code Review)
+          # Falls back to GITHUB_TOKEN if RELEASE_PAT is not set
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      - name: Log release outputs
+        env:
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PR_NUMBER: ${{ steps.release.outputs.pr }}
+        run: |
+          echo "Release created: ${RELEASE_CREATED:-false}"
+          echo "Tag: ${TAG_NAME:-none}"
+          echo "Version: ${VERSION:-none}"
+          echo "PR: ${PR_NUMBER:-none}"
+
+      # Auto-merge release PRs (no review required for automated releases)
+      - name: Enable auto-merge for release PR
+        if: ${{ steps.release.outputs.pr }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.release.outputs.pr }}
+        run: |
+          echo "Enabling auto-merge for PR #${PR_NUMBER}"
+          gh pr merge ${PR_NUMBER} --auto --squash --repo ${{ github.repository }} || echo "Auto-merge may already be enabled or PR is not mergeable yet"
+
+  # Deploy to Cloudflare Workers on release
   deploy:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,22 +73,31 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
 
-  auto-merge-release-pr:
-    runs-on: ubuntu-latest
-    if: ${{ !needs.release-please.outputs.release_created }}
-    needs: release-please
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Enable auto-merge for release PRs
+      - name: Create release summary
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.version }}
         run: |
-          PR_NUMBER=$(gh pr list --label "autorelease: pending" --json number --jq '.[0].number')
-          if [ -n "$PR_NUMBER" ]; then
-            echo "Enabling auto-merge for PR #$PR_NUMBER"
-            gh pr merge "$PR_NUMBER" --auto --squash
-          else
-            echo "No release PR found"
-          fi
+          echo "## Argus MCP Server Release ${TAG_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy | Passed |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployed to: https://argus-mcp.samuelvinay-kumar.workers.dev" >> $GITHUB_STEP_SUMMARY
+
+  # Notify on release
+  notify-release:
+    needs: [release-please, deploy]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log release info
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          echo "Released argus-mcp-server@${VERSION}"
+          echo "Tag: ${TAG_NAME}"
