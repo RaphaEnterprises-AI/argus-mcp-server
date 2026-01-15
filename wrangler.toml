@@ -22,13 +22,19 @@ binding = "AI"
 # Environment variables
 [vars]
 ENVIRONMENT = "production"
-# Worker URL - Browser automation only (act, extract, observe)
+# Browser Pool URL - Primary browser automation (Vultr VKE cluster - Mumbai)
+# Deployed via: ./browser-pool/deploy-vultr.sh
+# Note: Using nip.io domain because Cloudflare Workers can't fetch raw IPs (error 1003)
+BROWSER_POOL_URL = "http://65.20.72.251.nip.io"
+# Worker URL - Fallback browser automation (Cloudflare Browser Rendering)
 ARGUS_API_URL = "https://argus-api.samuelvinay-kumar.workers.dev"
 # Brain URL - Intelligence (test planning, quality, webhooks)
 ARGUS_BRAIN_URL = "https://argus-brain-production.up.railway.app"
 
 # Secrets (set via `wrangler secret put <NAME>`):
 # - API_TOKEN (for authenticating with Argus API)
+# - BROWSER_POOL_JWT_SECRET (production - JWT signing for browser pool)
+# - BROWSER_POOL_API_KEY (deprecated - legacy API key, use JWT instead)
 # - ANTHROPIC_API_KEY (optional, for enhanced AI analysis)
 
 # KV namespace for auth state persistence

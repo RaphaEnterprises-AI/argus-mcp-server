@@ -24,12 +24,86 @@ import { z } from "zod";
 // Environment types
 interface Env {
   AI: Ai;
-  ARGUS_API_URL: string;  // Worker - browser automation
+  BROWSER_POOL_URL?: string;  // Primary - Vultr VKE browser pool
+  BROWSER_POOL_JWT_SECRET?: string;  // JWT secret for pool auth (production)
+  BROWSER_POOL_API_KEY?: string;  // Legacy API key (deprecated)
+  ARGUS_API_URL: string;  // Fallback - Cloudflare browser automation
   ARGUS_BRAIN_URL: string;  // Brain - intelligence
   API_TOKEN?: string;
   ANTHROPIC_API_KEY?: string;
   MCP_OAUTH: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace;
+}
+
+// =====================================================
+// JWT Token Signing for Browser Pool (Production-Grade)
+// =====================================================
+
+interface PoolTokenPayload {
+  iss: string;      // Issuer: 'argus-mcp'
+  sub: string;      // User ID
+  aud: string;      // Audience: 'browser-pool'
+  exp: number;      // Expiration
+  iat: number;      // Issued at
+  jti: string;      // Unique token ID
+  org_id?: string;  // Organization ID
+  email?: string;   // User email (for audit)
+  action?: string;  // Action being performed
+  ip?: string;      // Client IP
+}
+
+function base64UrlEncode(data: string | ArrayBuffer): string {
+  const bytes = typeof data === 'string'
+    ? new TextEncoder().encode(data)
+    : new Uint8Array(data);
+  const base64 = btoa(String.fromCharCode(...bytes));
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function signPoolToken(
+  payload: Omit<PoolTokenPayload, 'iat' | 'exp' | 'jti'>,
+  secret: string,
+  expiresInSeconds: number = 300
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+
+  const fullPayload: PoolTokenPayload = {
+    ...payload,
+    iat: now,
+    exp: now + expiresInSeconds,
+    jti: crypto.randomUUID(),
+  };
+
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const headerB64 = base64UrlEncode(JSON.stringify(header));
+  const payloadB64 = base64UrlEncode(JSON.stringify(fullPayload));
+
+  // Sign using Web Crypto API (Cloudflare Workers compatible)
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(`${headerB64}.${payloadB64}`)
+  );
+
+  const signatureB64 = base64UrlEncode(signature);
+  return `${headerB64}.${payloadB64}.${signatureB64}`;
+}
+
+// User context from MCP session
+interface UserContext {
+  userId: string;
+  orgId?: string;
+  email?: string;
+  ip?: string;
 }
 
 // Brain API Response types
@@ -444,14 +518,23 @@ interface ArgusTestResponse {
 }
 
 interface ArgusObserveResponse {
-  success: boolean;
+  success?: boolean;  // Optional - Cloudflare fallback doesn't include this
   actions?: Array<{
     description: string;
     selector: string;
     type: string;
     confidence: number;
+    method?: string;    // Cloudflare format
+    arguments?: unknown[];  // Cloudflare format
+  }>;
+  elements?: Array<{   // Cloudflare fallback format
+    tag: string;
+    text: string;
+    selector: string;
+    attributes?: Record<string, string>;
   }>;
   error?: string;
+  _backend?: string;   // Cloudflare includes this
 }
 
 interface ArgusExtractResponse {
@@ -491,31 +574,90 @@ type ImageContent = {
 
 type McpContent = TextContent | ImageContent;
 
-// Helper to call Worker API (browser automation)
+// Helper to call Browser Pool API (primary) with Cloudflare fallback
+// Now with production-grade JWT authentication and user context
 async function callWorkerAPI<T>(
   endpoint: string,
   body: Record<string, unknown>,
-  env: Env
+  env: Env,
+  userContext?: UserContext
 ): Promise<T> {
-  const apiUrl = env.ARGUS_API_URL || "https://argus-api.samuelvinay-kumar.workers.dev";
+  // Primary: Vultr VKE Browser Pool (if configured)
+  const poolUrl = env.BROWSER_POOL_URL;
+  // Fallback: Cloudflare Browser Rendering
+  const fallbackUrl = env.ARGUS_API_URL || "https://argus-api.samuelvinay-kumar.workers.dev";
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  // Try Browser Pool first if configured
+  if (poolUrl) {
+    try {
+      console.log(`[DEBUG] Attempting Browser Pool: ${poolUrl}${endpoint}`);
+      const poolHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
 
-  if (env.API_TOKEN) {
-    headers["Authorization"] = `Bearer ${env.API_TOKEN}`;
+      // Production: Sign JWT with user context
+      if (env.BROWSER_POOL_JWT_SECRET) {
+        console.log(`[DEBUG] Signing JWT with secret (length: ${env.BROWSER_POOL_JWT_SECRET.length})`);
+        const token = await signPoolToken({
+          iss: "argus-mcp",
+          sub: userContext?.userId || "mcp-anonymous",
+          aud: "browser-pool",
+          org_id: userContext?.orgId,
+          email: userContext?.email,
+          action: endpoint.replace("/", ""),
+          ip: userContext?.ip,
+        }, env.BROWSER_POOL_JWT_SECRET);
+        poolHeaders["Authorization"] = `Bearer ${token}`;
+        console.log(`[DEBUG] JWT signed, token length: ${token.length}`);
+      }
+      // Legacy fallback: Use static API key (deprecated)
+      else if (env.BROWSER_POOL_API_KEY) {
+        console.warn("DEPRECATION: Using legacy API key. Configure BROWSER_POOL_JWT_SECRET.");
+        poolHeaders["Authorization"] = `Bearer ${env.BROWSER_POOL_API_KEY}`;
+      } else {
+        console.warn("[DEBUG] No auth configured for Browser Pool!");
+      }
+
+      console.log(`[DEBUG] Fetching ${poolUrl}${endpoint}`);
+      const response = await fetch(`${poolUrl}${endpoint}`, {
+        method: "POST",
+        headers: poolHeaders,
+        body: JSON.stringify(body),
+      });
+      console.log(`[DEBUG] Browser Pool response: ${response.status}`);
+
+      if (response.ok) {
+        return response.json() as Promise<T>;
+      }
+
+      // Pool failed, log and fall through to fallback
+      const errorText = await response.text();
+      console.warn(`Browser Pool failed (${response.status}): ${errorText}, falling back to Cloudflare`);
+    } catch (error) {
+      console.warn(`Browser Pool error: ${error}, falling back to Cloudflare`);
+    }
+  } else {
+    console.log(`[DEBUG] No BROWSER_POOL_URL configured, using fallback`);
   }
 
-  const response = await fetch(`${apiUrl}${endpoint}`, {
+  // Fallback headers (for Cloudflare/Argus API)
+  const fallbackHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (env.API_TOKEN) {
+    fallbackHeaders["Authorization"] = `Bearer ${env.API_TOKEN}`;
+  }
+
+  // Fallback to Cloudflare Browser Rendering
+  const response = await fetch(`${fallbackUrl}${endpoint}`, {
     method: "POST",
-    headers,
+    headers: fallbackHeaders,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    throw new Error(`Browser API error (${response.status}): ${errorText}`);
   }
 
   return response.json() as Promise<T>;
@@ -1010,7 +1152,9 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
             instruction: instruction || "What actions can I take on this page?",
           }, this.env);
 
-          if (!result.success) {
+          // Handle both Browser Pool format (success: true) and Cloudflare format (no success field)
+          const hasData = result.actions?.length || result.elements?.length;
+          if (result.success === false || (!hasData && result.error)) {
             return {
               content: [
                 {
@@ -1022,10 +1166,20 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
             };
           }
 
-          // Format the discovered actions
-          const formattedActions = result.actions?.map((action, i) =>
-            `${i + 1}. ${action.description}\n   Selector: \`${action.selector}\`\n   Type: ${action.type}\n   Confidence: ${(action.confidence * 100).toFixed(0)}%`
-          ).join("\n\n") || "No actions discovered";
+          // Format the discovered actions (handle both formats)
+          let formattedActions: string;
+          if (result.actions?.length) {
+            formattedActions = result.actions.map((action, i) =>
+              `${i + 1}. ${action.description}\n   Selector: \`${action.selector}\`\n   Type: ${action.type || action.method || 'action'}${action.confidence ? `\n   Confidence: ${(action.confidence * 100).toFixed(0)}%` : ''}`
+            ).join("\n\n");
+          } else if (result.elements?.length) {
+            // Cloudflare fallback format
+            formattedActions = result.elements.map((el, i) =>
+              `${i + 1}. ${el.text || el.tag}\n   Selector: \`${el.selector}\`\n   Type: ${el.tag}${el.attributes?.href ? `\n   Link: ${el.attributes.href}` : ''}`
+            ).join("\n\n");
+          } else {
+            formattedActions = "No actions discovered";
+          }
 
           return {
             content: [
