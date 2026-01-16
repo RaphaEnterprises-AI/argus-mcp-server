@@ -37,6 +37,18 @@ ARGUS_BRAIN_URL = "https://argus-brain-production.up.railway.app"
 # - BROWSER_POOL_API_KEY (deprecated - legacy API key, use JWT instead)
 # - ANTHROPIC_API_KEY (optional, for enhanced AI analysis)
 
+# ============================================================================
+# R2 Storage - Object storage for screenshots and artifacts
+# Uses same bucket as argus-api for unified storage
+# ============================================================================
+[[r2_buckets]]
+binding = "SCREENSHOTS"
+bucket_name = "argus-artifacts"
+
+# R2 key patterns:
+# - mcp-screenshots/{session_id}/{step_index}.png
+# - mcp-screenshots/{session_id}/final.png
+
 # KV namespace for auth state persistence
 [[kv_namespaces]]
 binding = "AUTH_STATE"

@@ -24,6 +24,8 @@ import { z } from "zod";
 // Environment types
 interface Env {
   AI: Ai;
+  SCREENSHOTS: R2Bucket;  // R2 storage for screenshots
+  SCREENSHOTS_PUBLIC_URL?: string;  // Public URL for R2 screenshots
   BROWSER_POOL_URL?: string;  // Primary - Vultr VKE browser pool
   BROWSER_POOL_JWT_SECRET?: string;  // JWT secret for pool auth (production)
   BROWSER_POOL_API_KEY?: string;  // Legacy API key (deprecated)
@@ -96,6 +98,266 @@ async function signPoolToken(
 
   const signatureB64 = base64UrlEncode(signature);
   return `${headerB64}.${payloadB64}.${signatureB64}`;
+}
+
+// =====================================================
+// R2 Screenshot Storage
+// =====================================================
+
+// MCP server base URL for screenshot serving
+const MCP_SERVER_URL = "https://argus-mcp.samuelvinay-kumar.workers.dev";
+
+// Screenshot URL expiry time (1 hour)
+const SCREENSHOT_URL_EXPIRY_MS = 60 * 60 * 1000;
+
+interface ScreenshotUploadResult {
+  success: boolean;
+  url?: string;
+  key?: string;
+  error?: string;
+}
+
+/**
+ * Generate a signed token for screenshot access
+ * Token format: base64url(expiry:signature)
+ * This combines expiry into the token to avoid URL truncation issues with &
+ */
+async function generateScreenshotToken(key: string, expiry: number, env: Env): Promise<string> {
+  const secret = env.BROWSER_POOL_JWT_SECRET || "default-secret-for-dev";
+  const data = `${key}:${expiry}`;
+
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    cryptoKey,
+    encoder.encode(data)
+  );
+
+  const sigB64 = base64UrlEncode(signature);
+  // Combine expiry and signature into single token: expiry.signature
+  return `${expiry}.${sigB64}`;
+}
+
+/**
+ * Parse and validate a screenshot token
+ * Returns { valid: true, expiry } or { valid: false, error }
+ */
+async function validateScreenshotToken(
+  token: string,
+  key: string,
+  env: Env
+): Promise<{ valid: boolean; expiry?: number; error?: string }> {
+  const parts = token.split(".");
+  if (parts.length !== 2) {
+    return { valid: false, error: "Invalid token format" };
+  }
+
+  const [expiryStr, signature] = parts;
+  const expiry = parseInt(expiryStr, 10);
+
+  if (isNaN(expiry)) {
+    return { valid: false, error: "Invalid expiry in token" };
+  }
+
+  if (Date.now() > expiry) {
+    return { valid: false, error: "Token expired" };
+  }
+
+  // Regenerate expected signature
+  const secret = env.BROWSER_POOL_JWT_SECRET || "default-secret-for-dev";
+  const data = `${key}:${expiry}`;
+
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const expectedSig = await crypto.subtle.sign(
+    "HMAC",
+    cryptoKey,
+    encoder.encode(data)
+  );
+
+  const expectedSigB64 = base64UrlEncode(expectedSig);
+
+  if (signature !== expectedSigB64) {
+    return { valid: false, error: "Invalid signature" };
+  }
+
+  return { valid: true, expiry };
+}
+
+/**
+ * Generate a signed URL for accessing a screenshot
+ * URL expires after SCREENSHOT_URL_EXPIRY_MS
+ * Uses single token parameter to avoid & truncation issues
+ */
+async function generateSignedScreenshotUrl(key: string, env: Env): Promise<string> {
+  const expiry = Date.now() + SCREENSHOT_URL_EXPIRY_MS;
+  const token = await generateScreenshotToken(key, expiry, env);
+
+  // Single parameter URL to avoid & truncation in markdown/terminals
+  return `${MCP_SERVER_URL}/screenshot/${encodeURIComponent(key)}?t=${token}`;
+}
+
+/**
+ * Store a screenshot in R2 and return a signed URL
+ */
+async function storeScreenshot(
+  env: Env,
+  screenshotData: unknown,  // Can be string, Buffer object, or serialized Buffer
+  sessionId: string,
+  identifier: string | number,  // step index or 'final'
+  metadata?: Record<string, string>
+): Promise<ScreenshotUploadResult> {
+  if (!env.SCREENSHOTS) {
+    console.warn("[R2] Screenshots bucket not configured");
+    return { success: false, error: "R2 storage not configured" };
+  }
+
+  try {
+    // Generate key: mcp-screenshots/{session_id}/{identifier}.png
+    const key = `mcp-screenshots/${sessionId}/${identifier}.png`;
+
+    // Handle different input formats
+    let bytes: Uint8Array;
+
+    if (!screenshotData) {
+      console.error(`[R2] Screenshot data is null/undefined`);
+      return { success: false, error: "Screenshot data is null/undefined" };
+    }
+
+    // Case 1: Already a base64 string
+    if (typeof screenshotData === "string") {
+      console.log(`[R2] Processing base64 string: length=${screenshotData.length}`);
+
+      // Clean and convert base64 to ArrayBuffer
+      let cleanBase64 = screenshotData
+        .replace(/^data:image\/\w+;base64,/, "")  // Remove data URL prefix if present
+        .replace(/[\s\n\r]/g, "")                  // Remove whitespace
+        .replace(/-/g, "+")                        // URL-safe base64 to standard
+        .replace(/_/g, "/");
+
+      // Add padding if needed
+      const paddingNeeded = (4 - (cleanBase64.length % 4)) % 4;
+      cleanBase64 += "=".repeat(paddingNeeded);
+
+      const binaryString = atob(cleanBase64);
+      bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+    }
+    // Case 2: Serialized Node.js Buffer ({ type: 'Buffer', data: [...] })
+    else if (
+      typeof screenshotData === "object" &&
+      screenshotData !== null &&
+      "type" in screenshotData &&
+      (screenshotData as { type: string }).type === "Buffer" &&
+      "data" in screenshotData &&
+      Array.isArray((screenshotData as { data: number[] }).data)
+    ) {
+      const bufferData = (screenshotData as { type: string; data: number[] }).data;
+      console.log(`[R2] Processing serialized Buffer: ${bufferData.length} bytes`);
+      bytes = new Uint8Array(bufferData);
+    }
+    // Case 3: ArrayBuffer or Uint8Array
+    else if (screenshotData instanceof ArrayBuffer) {
+      console.log(`[R2] Processing ArrayBuffer: ${screenshotData.byteLength} bytes`);
+      bytes = new Uint8Array(screenshotData);
+    }
+    else if (screenshotData instanceof Uint8Array) {
+      console.log(`[R2] Processing Uint8Array: ${screenshotData.length} bytes`);
+      bytes = screenshotData;
+    }
+    // Unknown format - log details for debugging
+    else {
+      const objType = typeof screenshotData;
+      const objKeys = typeof screenshotData === "object" && screenshotData !== null
+        ? Object.keys(screenshotData).slice(0, 5).join(", ")
+        : "N/A";
+      const objSample = typeof screenshotData === "object" && screenshotData !== null
+        ? JSON.stringify(screenshotData).slice(0, 200)
+        : String(screenshotData).slice(0, 100);
+      console.error(`[R2] Unknown screenshot format: type=${objType}, keys=[${objKeys}], sample=${objSample}`);
+      return { success: false, error: `Unknown screenshot format: ${objType}` };
+    }
+
+    console.log(`[R2] Uploading ${bytes.length} bytes to ${key}`);
+
+    // Upload to R2 (cast to ArrayBuffer to satisfy TypeScript)
+    await env.SCREENSHOTS.put(key, bytes.buffer as ArrayBuffer, {
+      httpMetadata: {
+        contentType: "image/png",
+        cacheControl: "private, max-age=3600",  // 1 hour cache (matches URL expiry)
+      },
+      customMetadata: {
+        sessionId,
+        identifier: String(identifier),
+        uploadedAt: new Date().toISOString(),
+        ...metadata,
+      },
+    });
+
+    // Generate signed URL (expires in 1 hour)
+    const url = await generateSignedScreenshotUrl(key, env);
+    console.log(`[R2] Screenshot stored: ${key}`);
+
+    return { success: true, url, key };
+  } catch (error) {
+    console.error("[R2] Screenshot upload failed:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Upload failed",
+    };
+  }
+}
+
+/**
+ * Store multiple screenshots and return URLs
+ */
+async function storeScreenshots(
+  env: Env,
+  screenshots: string[],
+  sessionId: string,
+  startIndex: number = 0
+): Promise<string[]> {
+  const urls: string[] = [];
+
+  for (let i = 0; i < screenshots.length; i++) {
+    const result = await storeScreenshot(
+      env,
+      screenshots[i],
+      sessionId,
+      startIndex + i
+    );
+    if (result.success && result.url) {
+      urls.push(result.url);
+    }
+  }
+
+  return urls;
+}
+
+/**
+ * Generate a unique session ID for screenshot grouping
+ */
+function generateSessionId(): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `${timestamp}-${random}`;
 }
 
 // User context from MCP session
@@ -490,6 +752,97 @@ interface CommentsResponse {
   }>;
 }
 
+// Infrastructure & Cost Response types
+interface InfraCostOverviewResponse {
+  currentMonthCost: number;
+  projectedMonthCost: number;
+  browserStackEquivalent: number;
+  savingsPercentage: number;
+  totalNodes: number;
+  totalPods: number;
+}
+
+interface InfraRecommendation {
+  id: string;
+  type: "scale_down" | "scale_up" | "optimize" | "alert";
+  title: string;
+  description: string;
+  potential_savings: number;
+  confidence: number;
+  status: "pending" | "applied" | "dismissed";
+  auto_applicable: boolean;
+  action?: Record<string, unknown>;
+}
+
+interface InfraRecommendationsResponse {
+  recommendations: InfraRecommendation[];
+  total_potential_savings: number;
+}
+
+interface InfraSnapshotResponse {
+  selenium: {
+    status: string;
+    ready_nodes: number;
+    queue_length: number;
+    active_sessions: number;
+    max_sessions: number;
+  };
+  chrome_nodes: {
+    ready: number;
+    busy: number;
+    total: number;
+    utilization: number;
+  };
+  firefox_nodes: {
+    ready: number;
+    busy: number;
+    total: number;
+    utilization: number;
+  };
+  edge_nodes: {
+    ready: number;
+    busy: number;
+    total: number;
+    utilization: number;
+  };
+  total_pods: number;
+  total_nodes: number;
+  cluster_cpu_utilization: number;
+  cluster_memory_utilization: number;
+  timestamp: string;
+}
+
+interface LLMUsageResponse {
+  models: Array<{
+    name: string;
+    provider: string;
+    input_tokens: number;
+    output_tokens: number;
+    cost: number;
+    requests: number;
+  }>;
+  features: Array<{
+    name: string;
+    cost: number;
+    percentage: number;
+    requests: number;
+  }>;
+  total_cost: number;
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  period: string;
+}
+
+interface InfraSavingsResponse {
+  total_monthly_savings: number;
+  recommendations_applied: number;
+  current_monthly_cost: number;
+  browserstack_equivalent: number;
+  savings_vs_browserstack: number;
+  savings_percentage: number;
+}
+
 // Argus API Response types
 interface ArgusActResponse {
   success: boolean;
@@ -701,8 +1054,86 @@ async function callBrainAPI<T>(
   return response.json() as Promise<T>;
 }
 
+// Helper to register MCP connection with Brain API
+async function registerMCPConnection(
+  env: Env,
+  accessToken: string,
+  sessionId: string,
+  clientName?: string
+): Promise<string | null> {
+  try {
+    const brainUrl = env?.ARGUS_BRAIN_URL || "https://argus-brain-production.up.railway.app";
+    const response = await fetch(`${brainUrl}/api/v1/mcp/connections/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        session_id: sessionId,
+        client_id: 'argus-mcp',
+        client_name: clientName || 'MCP Client',
+        client_type: 'mcp',
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json() as { connection_id: string };
+      console.log(`[MCP] Connection registered: ${data.connection_id}`);
+      return data.connection_id;
+    }
+    console.warn(`[MCP] Failed to register connection: ${response.status}`);
+    return null;
+  } catch (error) {
+    console.error('[MCP] Connection registration error:', error);
+    return null;
+  }
+}
+
 // Alias for backward compatibility
 const callArgusAPI = callWorkerAPI;
+
+// Helper to record MCP activity after tool executions
+async function recordMCPActivity(
+  env: Env,
+  accessToken: string,
+  connectionId: string,
+  toolName: string,
+  options: {
+    durationMs?: number;
+    success?: boolean;
+    errorMessage?: string;
+    screenshotKey?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> {
+  try {
+    await fetch(`${env.ARGUS_BRAIN_URL}/api/v1/mcp/connections/activity`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        connection_id: connectionId,
+        tool_name: toolName,
+        request_id: crypto.randomUUID(),
+        duration_ms: options.durationMs,
+        success: options.success ?? true,
+        error_message: options.errorMessage,
+        screenshot_key: options.screenshotKey,
+        input_tokens: options.inputTokens,
+        output_tokens: options.outputTokens,
+        metadata: options.metadata,
+      }),
+    });
+  } catch (error) {
+    console.error('[MCP] Activity recording error:', error);
+    // Don't throw - activity recording should not block tool execution
+  }
+}
 
 // Interface for KV namespace
 interface KVNamespace {
@@ -795,6 +1226,48 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
       throw new Error("AUTH_REQUIRED");
     }
     return accessToken;
+  }
+
+  /**
+   * Get the stored MCP connection ID from DO storage
+   * Returns undefined if not connected
+   */
+  async getConnectionId(): Promise<string | undefined> {
+    try {
+      const connectionStr = await this.ctx.storage.get<string>("mcp_connection");
+      if (connectionStr) {
+        const connection = JSON.parse(connectionStr);
+        return connection.connection_id;
+      }
+      return undefined;
+    } catch (error) {
+      console.error("Error getting connection ID:", error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Record activity for a tool execution (non-blocking)
+   */
+  async recordActivity(
+    toolName: string,
+    options: {
+      durationMs?: number;
+      success?: boolean;
+      errorMessage?: string;
+      screenshotKey?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<void> {
+    const accessToken = await this.getAccessToken();
+    const connectionId = await this.getConnectionId();
+
+    if (accessToken && connectionId) {
+      // Fire and forget - don't await
+      recordMCPActivity(this.env, accessToken, connectionId, toolName, options);
+    }
   }
 
   /**
@@ -1019,6 +1492,24 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
           // Clear pending auth
           await this.ctx.storage.delete("pending_auth");
 
+          // Register the MCP connection with the Brain API
+          const sessionId = generateSessionId();
+          const connectionId = await registerMCPConnection(
+            this.env,
+            data.access_token,
+            sessionId,
+            'Claude Code MCP'
+          );
+
+          // Store connection_id in DO storage if registration succeeded
+          if (connectionId) {
+            await this.ctx.storage.put("mcp_connection", JSON.stringify({
+              connection_id: connectionId,
+              session_id: sessionId,
+              registered_at: new Date().toISOString(),
+            }));
+          }
+
           return {
             content: [{
               type: "text" as const,
@@ -1206,7 +1697,10 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
         screenshot: z.boolean().optional().describe("Capture a screenshot after the action (default: true)"),
       },
       async ({ url, instruction, selfHeal = true, screenshot = true }) => {
+        const startTime = Date.now();
         try {
+          const sessionId = generateSessionId();
+
           const result = await callArgusAPI<ArgusActResponse>("/act", {
             url,
             instruction,
@@ -1215,6 +1709,14 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
           }, this.env);
 
           if (!result.success) {
+            // Record failed activity
+            this.recordActivity("argus_act", {
+              durationMs: Date.now() - startTime,
+              success: false,
+              errorMessage: result.error || "Unknown error",
+              metadata: { url, instruction },
+            });
+
             return {
               content: [
                 {
@@ -1226,24 +1728,51 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
             };
           }
 
-          const content: McpContent[] = [
-            {
-              type: "text" as const,
-              text: `## Action Result\n\n${result.message || "Action completed successfully"}\n\n### Actions Performed:\n${result.actions?.map(a => `- ${a.action}${a.selector ? ` on \`${a.selector}\`` : ""}${a.value ? ` with value "${a.value}"` : ""}: ${a.success ? "Success" : "Failed"}`).join("\n") || "None"}`,
-            },
-          ];
-
-          // Add screenshot if available
+          // Store screenshot in R2 if available
+          let screenshotUrl: string | undefined;
+          let screenshotKey: string | undefined;
           if (result.screenshot) {
-            content.push({
-              type: "image" as const,
-              data: result.screenshot,
-              mimeType: "image/png",
-            });
+            const uploaded = await storeScreenshot(
+              this.env,
+              result.screenshot,
+              sessionId,
+              "action",
+              { instruction, url }
+            );
+            screenshotUrl = uploaded.url;
+            screenshotKey = uploaded.key;
           }
 
-          return { content };
+          // Build screenshot section
+          const screenshotSection = screenshotUrl
+            ? `\n\n### Screenshot:\n[View Screenshot](${screenshotUrl})`
+            : "";
+
+          // Record successful activity
+          this.recordActivity("argus_act", {
+            durationMs: Date.now() - startTime,
+            success: true,
+            screenshotKey,
+            metadata: { url, instruction, sessionId },
+          });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `## Action Result\n\n**Session ID:** ${sessionId}\n\n${result.message || "Action completed successfully"}\n\n### Actions Performed:\n${result.actions?.map(a => `- ${a.action}${a.selector ? ` on \`${a.selector}\`` : ""}${a.value ? ` with value "${a.value}"` : ""}: ${a.success ? "Success" : "Failed"}`).join("\n") || "None"}${screenshotSection}`,
+              },
+            ],
+          };
         } catch (error) {
+          // Record error activity
+          this.recordActivity("argus_act", {
+            durationMs: Date.now() - startTime,
+            success: false,
+            errorMessage: error instanceof Error ? error.message : "Unknown error",
+            metadata: { url, instruction },
+          });
+
           return this.handleError(error);
         }
       }
@@ -1259,7 +1788,10 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
         browser: z.enum(["chrome", "firefox", "safari", "edge"]).optional().describe("Browser to use (default: chrome)"),
       },
       async ({ url, steps, browser = "chrome" }) => {
+        const startTime = Date.now();
         try {
+          const sessionId = generateSessionId();
+
           const result = await callArgusAPI<ArgusTestResponse>("/test", {
             url,
             steps,
@@ -1278,24 +1810,92 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
           const passedSteps = result.steps?.filter(s => s.success).length || 0;
           const totalSteps = result.steps?.length || 0;
 
-          const content: McpContent[] = [
-            {
-              type: "text" as const,
-              text: `## Test Results: ${overallStatus}\n\n**Browser:** ${browser}\n**URL:** ${url}\n**Steps:** ${passedSteps}/${totalSteps} passed\n\n### Step Details:\n${stepResults}`,
-            },
-          ];
+          // Store screenshots in R2 and get URLs
+          const screenshotUrls: string[] = [];
+          const screenshotKeys: string[] = [];
+          let finalScreenshotUrl: string | undefined;
+          let finalScreenshotKey: string | undefined;
 
-          // Add final screenshot if available
-          if (result.finalScreenshot) {
-            content.push({
-              type: "image" as const,
-              data: result.finalScreenshot,
-              mimeType: "image/png",
-            });
+          // Store step screenshots if available
+          if (result.steps) {
+            for (let i = 0; i < result.steps.length; i++) {
+              const step = result.steps[i];
+              if (step.screenshot) {
+                const uploaded = await storeScreenshot(
+                  this.env,
+                  step.screenshot,
+                  sessionId,
+                  i,
+                  { stepName: step.instruction, url }
+                );
+                if (uploaded.url) {
+                  screenshotUrls.push(uploaded.url);
+                }
+                if (uploaded.key) {
+                  screenshotKeys.push(uploaded.key);
+                }
+              }
+            }
           }
 
-          return { content };
+          // Store final screenshot
+          if (result.finalScreenshot) {
+            const uploaded = await storeScreenshot(
+              this.env,
+              result.finalScreenshot,
+              sessionId,
+              "final",
+              { type: "final", url }
+            );
+            finalScreenshotUrl = uploaded.url;
+            finalScreenshotKey = uploaded.key;
+          }
+
+          // Build screenshot section for response
+          let screenshotSection = "";
+          if (screenshotUrls.length > 0 || finalScreenshotUrl) {
+            screenshotSection = "\n\n### Screenshots:";
+            screenshotUrls.forEach((screenshotUrl, i) => {
+              screenshotSection += `\n${i + 1}. [Step ${i + 1}](${screenshotUrl})`;
+            });
+            if (finalScreenshotUrl) {
+              screenshotSection += `\n- [Final Screenshot](${finalScreenshotUrl})`;
+            }
+          }
+
+          // Record activity
+          this.recordActivity("argus_test", {
+            durationMs: Date.now() - startTime,
+            success: result.success,
+            errorMessage: result.success ? undefined : result.error,
+            screenshotKey: finalScreenshotKey || screenshotKeys[screenshotKeys.length - 1],
+            metadata: {
+              url,
+              browser,
+              sessionId,
+              totalSteps,
+              passedSteps,
+              stepCount: steps.length,
+            },
+          });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `## Test Results: ${overallStatus}\n\n**Session ID:** ${sessionId}\n**Browser:** ${browser}\n**URL:** ${url}\n**Steps:** ${passedSteps}/${totalSteps} passed\n\n### Step Details:\n${stepResults}${screenshotSection}`,
+              },
+            ],
+          };
         } catch (error) {
+          // Record error activity
+          this.recordActivity("argus_test", {
+            durationMs: Date.now() - startTime,
+            success: false,
+            errorMessage: error instanceof Error ? error.message : "Unknown error",
+            metadata: { url, browser, stepCount: steps.length },
+          });
+
           return this.handleError(error);
         }
       }
@@ -1354,7 +1954,10 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
         maxSteps: z.number().min(1).max(30).optional().describe("Maximum number of steps to take (default: 10)"),
       },
       async ({ url, instruction, maxSteps = 10 }) => {
+        const startTime = Date.now();
         try {
+          const sessionId = generateSessionId();
+
           const result = await callArgusAPI<ArgusAgentResponse>("/agent", {
             url,
             instruction,
@@ -1370,24 +1973,71 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
             return `${i + 1}. [${icon}] ${action.action}`;
           }).join("\n") || "No actions recorded";
 
-          const content: McpContent[] = [
-            {
-              type: "text" as const,
-              text: `## Agent Task: ${status}\n\n**Goal:** ${instruction}\n**Starting URL:** ${url}\n**Steps taken:** ${result.actions?.length || 0}/${maxSteps}\n\n### Actions:\n${actionsList}\n\n${result.message ? `**Result:** ${result.message}` : ""}`,
-            },
-          ];
-
-          // Add the last screenshot if available
+          // Store all screenshots in R2
+          const screenshotUrls: string[] = [];
+          const screenshotKeys: string[] = [];
           if (result.screenshots && result.screenshots.length > 0) {
-            content.push({
-              type: "image" as const,
-              data: result.screenshots[result.screenshots.length - 1],
-              mimeType: "image/png",
+            for (let i = 0; i < result.screenshots.length; i++) {
+              const uploaded = await storeScreenshot(
+                this.env,
+                result.screenshots[i],
+                sessionId,
+                i,
+                { step: String(i), url }
+              );
+              if (uploaded.url) {
+                screenshotUrls.push(uploaded.url);
+              }
+              if (uploaded.key) {
+                screenshotKeys.push(uploaded.key);
+              }
+            }
+          }
+
+          // Build screenshot section
+          let screenshotSection = "";
+          if (screenshotUrls.length > 0) {
+            screenshotSection = "\n\n### Screenshots:";
+            screenshotUrls.forEach((screenshotUrl, i) => {
+              screenshotSection += `\n${i + 1}. [Step ${i + 1}](${screenshotUrl})`;
             });
           }
 
-          return { content };
+          // Record activity
+          this.recordActivity("argus_agent", {
+            durationMs: Date.now() - startTime,
+            success: result.success,
+            errorMessage: result.success ? undefined : result.error,
+            screenshotKey: screenshotKeys[screenshotKeys.length - 1],
+            inputTokens: result.usage?.inputTokens,
+            outputTokens: result.usage?.outputTokens,
+            metadata: {
+              url,
+              instruction,
+              sessionId,
+              maxSteps,
+              actionsTaken: result.actions?.length || 0,
+              completed: result.completed,
+            },
+          });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `## Agent Task: ${status}\n\n**Session ID:** ${sessionId}\n**Goal:** ${instruction}\n**Starting URL:** ${url}\n**Steps taken:** ${result.actions?.length || 0}/${maxSteps}\n\n### Actions:\n${actionsList}\n\n${result.message ? `**Result:** ${result.message}` : ""}${screenshotSection}`,
+              },
+            ],
+          };
         } catch (error) {
+          // Record error activity
+          this.recordActivity("argus_agent", {
+            durationMs: Date.now() - startTime,
+            success: false,
+            errorMessage: error instanceof Error ? error.message : "Unknown error",
+            metadata: { url, instruction, maxSteps },
+          });
+
           return this.handleError(error);
         }
       }
@@ -3313,6 +3963,270 @@ Recent events: ${eventsResult.events?.map(e => e.title).join(", ") || "None"}
         }
       }
     );
+
+    // =====================================================
+    // INFRASTRUCTURE & COST MANAGEMENT TOOLS
+    // =====================================================
+
+    // Tool: argus_infra_overview - Get infrastructure cost overview
+    this.server.tool(
+      "argus_infra_overview",
+      "Get a comprehensive overview of infrastructure costs including current spend, projected costs, and comparison to BrowserStack pricing. Shows total savings achieved by self-hosting.",
+      {
+        days: z.number().optional().default(30).describe("Number of days to analyze (7, 30, or 90)"),
+      },
+      async ({ days }) => {
+        try {
+          await this.requireAuth();
+
+          const [costReport, snapshot, savings] = await Promise.all([
+            this.callBrainAPIWithAuth<{
+              total_cost: number;
+              projected_monthly: number;
+              comparison_to_browserstack: number;
+              savings_percentage: number;
+            }>(`/api/v1/infra/cost-report?days=${days}`, "GET"),
+            this.callBrainAPIWithAuth<InfraSnapshotResponse>("/api/v1/infra/snapshot", "GET"),
+            this.callBrainAPIWithAuth<InfraSavingsResponse>("/api/v1/infra/savings-summary", "GET"),
+          ]);
+
+          const savingsEmoji = savings.savings_percentage > 80 ? "🟢" : savings.savings_percentage > 50 ? "🟡" : "🔴";
+
+          let output = `# Infrastructure Cost Overview 💰\n\n`;
+          output += `## Current Period (${days} days)\n\n`;
+          output += `| Metric | Value |\n|--------|-------|\n`;
+          output += `| Current Spend | $${costReport.total_cost.toFixed(2)} |\n`;
+          output += `| Projected Monthly | $${costReport.projected_monthly.toFixed(2)} |\n`;
+          output += `| BrowserStack Equivalent | $${costReport.comparison_to_browserstack.toFixed(2)} |\n`;
+          output += `| ${savingsEmoji} Savings | ${savings.savings_percentage.toFixed(0)}% |\n\n`;
+
+          output += `## Browser Pool Status\n\n`;
+          output += `| Resource | Count | Utilization |\n|----------|-------|-------------|\n`;
+          output += `| Total Nodes | ${snapshot.total_nodes} | ${snapshot.cluster_cpu_utilization.toFixed(0)}% CPU |\n`;
+          output += `| Total Pods | ${snapshot.total_pods} | ${snapshot.cluster_memory_utilization.toFixed(0)}% Memory |\n`;
+          output += `| Chrome | ${snapshot.chrome_nodes.total} | ${snapshot.chrome_nodes.utilization.toFixed(0)}% |\n`;
+          output += `| Firefox | ${snapshot.firefox_nodes.total} | ${snapshot.firefox_nodes.utilization.toFixed(0)}% |\n`;
+          output += `| Edge | ${snapshot.edge_nodes.total} | ${snapshot.edge_nodes.utilization.toFixed(0)}% |\n\n`;
+
+          output += `## Savings Summary\n\n`;
+          output += `- **Monthly Savings**: $${savings.savings_vs_browserstack.toFixed(2)} vs BrowserStack\n`;
+          output += `- **Recommendations Applied**: ${savings.recommendations_applied}\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_infra_recommendations - Get AI-powered cost optimization recommendations
+    this.server.tool(
+      "argus_infra_recommendations",
+      "Get AI-powered recommendations for optimizing infrastructure costs. Analyzes usage patterns and suggests scaling changes, resource optimizations, and cost-saving opportunities.",
+      {},
+      async () => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<InfraRecommendationsResponse>(
+            "/api/v1/infra/recommendations",
+            "GET"
+          );
+
+          if (!result.recommendations || result.recommendations.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: "# Infrastructure Recommendations 🤖\n\n✅ No optimization recommendations at this time. Your infrastructure is running efficiently!",
+              }],
+            };
+          }
+
+          let output = `# Infrastructure Recommendations 🤖\n\n`;
+          output += `**Total Potential Savings**: $${result.total_potential_savings.toFixed(2)}/month\n\n`;
+
+          result.recommendations.forEach((rec, index) => {
+            const typeEmoji = {
+              scale_down: "📉",
+              scale_up: "📈",
+              optimize: "⚡",
+              alert: "⚠️",
+            }[rec.type] || "💡";
+
+            const confidenceEmoji = rec.confidence > 0.8 ? "🟢" : rec.confidence > 0.5 ? "🟡" : "🟠";
+
+            output += `## ${index + 1}. ${typeEmoji} ${rec.title}\n\n`;
+            output += `${rec.description}\n\n`;
+            output += `- **Potential Savings**: $${rec.potential_savings.toFixed(2)}/month\n`;
+            output += `- **Confidence**: ${confidenceEmoji} ${(rec.confidence * 100).toFixed(0)}%\n`;
+            output += `- **Status**: ${rec.status}\n`;
+            output += `- **Auto-applicable**: ${rec.auto_applicable ? "Yes ✅" : "No (requires approval)"}\n`;
+            output += `- **ID**: \`${rec.id}\`\n\n`;
+          });
+
+          output += `---\n\n`;
+          output += `To apply a recommendation: \`argus_infra_apply("recommendation_id")\`\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_infra_apply - Apply an infrastructure recommendation
+    this.server.tool(
+      "argus_infra_apply",
+      "Apply an infrastructure optimization recommendation. Can be set to auto-apply (for safe changes) or require manual confirmation.",
+      {
+        recommendation_id: z.string().describe("The recommendation ID to apply"),
+        auto: z.boolean().optional().default(false).describe("Whether to auto-apply without confirmation"),
+      },
+      async ({ recommendation_id, auto }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<{
+            success: boolean;
+            action_applied?: Record<string, unknown>;
+            status?: string;
+            error?: string;
+          }>(
+            `/api/v1/infra/recommendations/${recommendation_id}/apply`,
+            "POST",
+            { auto }
+          );
+
+          if (result.success) {
+            let output = `# Recommendation Applied ✅\n\n`;
+            output += `The recommendation has been successfully applied.\n\n`;
+            if (result.action_applied) {
+              output += `**Action taken**: ${JSON.stringify(result.action_applied, null, 2)}\n`;
+            }
+            return {
+              content: [{ type: "text" as const, text: output }],
+            };
+          } else {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `# Failed to Apply Recommendation ❌\n\n${result.error || "Unknown error occurred"}`,
+              }],
+              isError: true,
+            };
+          }
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_llm_usage - Get LLM/AI usage and costs
+    this.server.tool(
+      "argus_llm_usage",
+      "Get detailed breakdown of LLM/AI usage and costs. Shows which models are being used, token consumption, and costs per feature (test generation, self-healing, etc.).",
+      {
+        period: z.string().optional().default("30d").describe("Period to analyze (7d, 30d, or 90d)"),
+      },
+      async ({ period }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<LLMUsageResponse>(
+            `/api/v1/ai/usage?period=${period}`,
+            "GET"
+          );
+
+          let output = `# AI / LLM Usage Report 🤖\n\n`;
+          output += `**Period**: ${result.period}\n`;
+          output += `**Total Cost**: $${result.total_cost.toFixed(2)}\n`;
+          output += `**Total Requests**: ${result.total_requests.toLocaleString()}\n\n`;
+
+          output += `## Usage by Model\n\n`;
+          output += `| Model | Provider | Requests | Tokens (in/out) | Cost |\n`;
+          output += `|-------|----------|----------|-----------------|------|\n`;
+
+          result.models.forEach(model => {
+            const tokensIn = (model.input_tokens / 1_000_000).toFixed(1) + "M";
+            const tokensOut = (model.output_tokens / 1_000_000).toFixed(1) + "M";
+            output += `| ${model.name} | ${model.provider} | ${model.requests.toLocaleString()} | ${tokensIn} / ${tokensOut} | $${model.cost.toFixed(2)} |\n`;
+          });
+
+          output += `\n## Usage by Feature\n\n`;
+          output += `| Feature | Requests | Cost | % of Total |\n`;
+          output += `|---------|----------|------|------------|\n`;
+
+          result.features.forEach(feature => {
+            output += `| ${feature.name} | ${feature.requests.toLocaleString()} | $${feature.cost.toFixed(2)} | ${feature.percentage}% |\n`;
+          });
+
+          output += `\n## Cost Optimization Tips 💡\n\n`;
+          output += `- **DeepSeek** for code analysis ($0.14/1M tokens) - 90% cheaper than Claude\n`;
+          output += `- **DeepSeek R1** for reasoning tasks - 10% cost of o1\n`;
+          output += `- **Claude** only for Computer Use (browser automation)\n`;
+          output += `- All models via **OpenRouter** - single API key, best pricing\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_browser_pool - Get real-time browser pool status
+    this.server.tool(
+      "argus_browser_pool",
+      "Get real-time status of the Selenium Grid browser pool. Shows node status, active sessions, queue length, and utilization metrics.",
+      {},
+      async () => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<InfraSnapshotResponse>(
+            "/api/v1/infra/snapshot",
+            "GET"
+          );
+
+          const statusEmoji = result.selenium.status === "healthy" ? "🟢" : result.selenium.status === "degraded" ? "🟡" : "🔴";
+
+          let output = `# Browser Pool Status ${statusEmoji}\n\n`;
+          output += `**Status**: ${result.selenium.status.toUpperCase()}\n`;
+          output += `**Timestamp**: ${result.timestamp}\n\n`;
+
+          output += `## Selenium Grid\n\n`;
+          output += `| Metric | Value |\n|--------|-------|\n`;
+          output += `| Ready Nodes | ${result.selenium.ready_nodes} |\n`;
+          output += `| Active Sessions | ${result.selenium.active_sessions} |\n`;
+          output += `| Max Sessions | ${result.selenium.max_sessions} |\n`;
+          output += `| Queue Length | ${result.selenium.queue_length} |\n\n`;
+
+          output += `## Browser Nodes\n\n`;
+          output += `| Browser | Ready | Busy | Total | Utilization |\n`;
+          output += `|---------|-------|------|-------|-------------|\n`;
+          output += `| 🟠 Chrome | ${result.chrome_nodes.ready} | ${result.chrome_nodes.busy} | ${result.chrome_nodes.total} | ${result.chrome_nodes.utilization.toFixed(0)}% |\n`;
+          output += `| 🟠 Firefox | ${result.firefox_nodes.ready} | ${result.firefox_nodes.busy} | ${result.firefox_nodes.total} | ${result.firefox_nodes.utilization.toFixed(0)}% |\n`;
+          output += `| 🔵 Edge | ${result.edge_nodes.ready} | ${result.edge_nodes.busy} | ${result.edge_nodes.total} | ${result.edge_nodes.utilization.toFixed(0)}% |\n\n`;
+
+          output += `## Cluster Resources\n\n`;
+          output += `- **CPU Utilization**: ${result.cluster_cpu_utilization.toFixed(0)}%\n`;
+          output += `- **Memory Utilization**: ${result.cluster_memory_utilization.toFixed(0)}%\n`;
+          output += `- **Total Pods**: ${result.total_pods}\n`;
+          output += `- **Total Nodes**: ${result.total_nodes}\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
   }
 }
 
@@ -3442,6 +4356,61 @@ export default {
         total_tools: 36,
         documentation: "https://github.com/raphaenterprises-ai/argus-e2e-testing-agent",
       });
+    }
+
+    // Screenshot serving endpoint (authenticated via signed token)
+    // URL format: /screenshot/{key}?t={expiry.signature}
+    // Single parameter to avoid & truncation in markdown/terminals
+    if (url.pathname.startsWith("/screenshot/")) {
+      const key = decodeURIComponent(url.pathname.slice("/screenshot/".length));
+      // Support both new format (?t=) and legacy format (?token=&exp=)
+      const newToken = url.searchParams.get("t");
+      const legacyToken = url.searchParams.get("token");
+      const legacyExp = url.searchParams.get("exp");
+
+      let validation: { valid: boolean; expiry?: number; error?: string };
+
+      if (newToken) {
+        // New single-parameter format: ?t=expiry.signature
+        validation = await validateScreenshotToken(newToken, key, env);
+      } else if (legacyToken && legacyExp) {
+        // Legacy format: ?token=signature&exp=expiry
+        const expiry = parseInt(legacyExp, 10);
+        if (isNaN(expiry) || Date.now() > expiry) {
+          validation = { valid: false, error: "Token expired" };
+        } else {
+          // Reconstruct and validate legacy token
+          const expectedToken = `${expiry}.${legacyToken}`;
+          validation = await validateScreenshotToken(expectedToken, key, env);
+        }
+      } else {
+        return new Response("Missing token parameter. Use ?t=token", { status: 401 });
+      }
+
+      if (!validation.valid) {
+        const status = validation.error === "Token expired" ? 403 : 401;
+        return new Response(validation.error || "Invalid token", { status });
+      }
+
+      // Fetch from R2
+      try {
+        const object = await env.SCREENSHOTS.get(key);
+        if (!object) {
+          return new Response("Screenshot not found", { status: 404 });
+        }
+
+        const data = await object.arrayBuffer();
+        return new Response(data, {
+          headers: {
+            "Content-Type": "image/png",
+            "Cache-Control": "private, max-age=3600",
+            "X-Screenshot-Key": key,
+          },
+        });
+      } catch (error) {
+        console.error("[Screenshot] Fetch error:", error);
+        return new Response("Failed to fetch screenshot", { status: 500 });
+      }
     }
 
     return new Response("Not found", { status: 404 });
