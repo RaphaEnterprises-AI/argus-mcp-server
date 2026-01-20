@@ -123,7 +123,10 @@ interface ScreenshotUploadResult {
  * This combines expiry into the token to avoid URL truncation issues with &
  */
 async function generateScreenshotToken(key: string, expiry: number, env: Env): Promise<string> {
-  const secret = env.BROWSER_POOL_JWT_SECRET || "default-secret-for-dev";
+  const secret = env.BROWSER_POOL_JWT_SECRET;
+  if (!secret) {
+    throw new Error("BROWSER_POOL_JWT_SECRET is required for screenshot signing - refusing to use insecure default");
+  }
   const data = `${key}:${expiry}`;
 
   const encoder = new TextEncoder();
@@ -172,7 +175,10 @@ async function validateScreenshotToken(
   }
 
   // Regenerate expected signature
-  const secret = env.BROWSER_POOL_JWT_SECRET || "default-secret-for-dev";
+  const secret = env.BROWSER_POOL_JWT_SECRET;
+  if (!secret) {
+    return { valid: false, error: "BROWSER_POOL_JWT_SECRET not configured" };
+  }
   const data = `${key}:${expiry}`;
 
   const encoder = new TextEncoder();
@@ -1709,11 +1715,12 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
           }, this.env);
 
           if (!result.success) {
-            // Record failed activity
+            // Record failed activity - use error, message, or fallback
+            const errorMsg = result.error || result.message || "Unknown error";
             this.recordActivity("argus_act", {
               durationMs: Date.now() - startTime,
               success: false,
-              errorMessage: result.error || "Unknown error",
+              errorMessage: errorMsg,
               metadata: { url, instruction },
             });
 
@@ -1721,7 +1728,7 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
               content: [
                 {
                   type: "text" as const,
-                  text: `Action failed: ${result.error || "Unknown error"}`,
+                  text: `Action failed: ${errorMsg}`,
                 },
               ],
               isError: true,
@@ -1930,11 +1937,13 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
             };
           }
 
+          // Handle case where data is undefined or null
+          const extractedData = result.data ?? {};
           return {
             content: [
               {
                 type: "text" as const,
-                text: `## Extracted Data from ${url}\n\n\`\`\`json\n${JSON.stringify(result.data, null, 2)}\n\`\`\``,
+                text: `## Extracted Data from ${url}\n\n\`\`\`json\n${JSON.stringify(extractedData, null, 2)}\n\`\`\``,
               },
             ],
           };
