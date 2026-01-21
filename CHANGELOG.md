@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/RaphaEnterprises-AI/argus-mcp-server/compare/argus-mcp-server-v1.3.0...argus-mcp-server-v1.4.0) (2026-01-21)
+
+
+### Features
+
+* **sentry:** add Sentry error monitoring for Cloudflare Workers ([e8ce6c3](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/e8ce6c395a9d5ad9933b1ec573f0b4472b86c750))
+
+
+### Bug Fixes
+
+* **security:** remove default JWT secret and improve error handling ([42d6393](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/42d639333657ce0c099a4386126d3c3dbe7ca863))
+
 ## [1.3.0](https://github.com/RaphaEnterprises-AI/argus-mcp-server/compare/argus-mcp-server-v1.2.0...argus-mcp-server-v1.3.0) (2026-01-16)
 
 
