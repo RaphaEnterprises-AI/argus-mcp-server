@@ -20,6 +20,7 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import * as Sentry from "@sentry/cloudflare";
 
 // Environment types
 interface Env {
@@ -35,6 +36,8 @@ interface Env {
   ANTHROPIC_API_KEY?: string;
   MCP_OAUTH: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace;
+  // Sentry configuration
+  SENTRY_DSN?: string;
 }
 
 // =====================================================
@@ -4275,13 +4278,20 @@ export class ArgusMcpAgent extends McpAgent<EnvWithKV> {
   async init() {}
 }
 
-// Export the Argus MCP Agent
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
+// Export the Argus MCP Agent with Sentry error tracking
+export default Sentry.withSentry(
+  (env: Env) => ({
+    dsn: env.SENTRY_DSN,
+    environment: "production",
+    release: "argus-mcp-server@3.0.0",
+    tracesSampleRate: 0.1,
+  }),
+  {
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+      const url = new URL(request.url);
 
-    // Handle the SSE endpoint for MCP (deprecated SSE protocol)
-    if (url.pathname === "/sse" || url.pathname === "/sse/message") {
+      // Handle the SSE endpoint for MCP (deprecated SSE protocol)
+      if (url.pathname === "/sse" || url.pathname === "/sse/message") {
       return ArgusMcpAgentSQLite.serveSSE("/sse").fetch(request, env, ctx);
     }
 
@@ -4423,5 +4433,6 @@ export default {
     }
 
     return new Response("Not found", { status: 404 });
-  },
-};
+    },
+  } as ExportedHandler<Env>
+);

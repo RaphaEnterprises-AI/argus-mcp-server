@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
+    "@sentry/cloudflare": "^10.36.0",
     "agents": "^0.0.92",
     "zod": "^3.25.76"
   },

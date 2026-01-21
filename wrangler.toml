@@ -36,6 +36,7 @@ ARGUS_BRAIN_URL = "https://argus-brain-production.up.railway.app"
 # - BROWSER_POOL_JWT_SECRET (production - JWT signing for browser pool)
 # - BROWSER_POOL_API_KEY (deprecated - legacy API key, use JWT instead)
 # - ANTHROPIC_API_KEY (optional, for enhanced AI analysis)
+# - SENTRY_DSN (for error monitoring)
 
 # ============================================================================
 # R2 Storage - Object storage for screenshots and artifacts
