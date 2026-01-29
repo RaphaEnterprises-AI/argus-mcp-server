@@ -728,6 +728,47 @@ interface ScheduleResponse {
   }>;
 }
 
+interface ScheduleCreateResponse {
+  success: boolean;
+  schedule: {
+    id: string;
+    name: string;
+    cron_expression: string;
+    test_ids: string[];
+    enabled: boolean;
+    next_run_at?: string;
+    created_at: string;
+  };
+  error?: string;
+}
+
+interface ScheduleRunResponse {
+  success: boolean;
+  run_id: string;
+  schedule_id: string;
+  status: string;
+  started_at: string;
+  message?: string;
+  error?: string;
+}
+
+interface ScheduleHistoryResponse {
+  success: boolean;
+  schedule_id: string;
+  runs: Array<{
+    id: string;
+    status: string;
+    started_at: string;
+    completed_at?: string;
+    duration_ms?: number;
+    tests_run: number;
+    tests_passed: number;
+    tests_failed: number;
+    error?: string;
+  }>;
+  total: number;
+}
+
 // AI Ask Response types
 interface AskResponse {
   answer: string;
@@ -850,6 +891,411 @@ interface InfraSavingsResponse {
   browserstack_equivalent: number;
   savings_vs_browserstack: number;
   savings_percentage: number;
+}
+
+// Discovery API Response types
+interface DiscoveryStartResponse {
+  success: boolean;
+  session_id: string;
+  status: string;
+  pages_discovered?: number;
+  flows_found?: number;
+  estimated_completion?: string;
+  error?: string;
+}
+
+interface DiscoveryFlow {
+  id: string;
+  name: string;
+  description: string;
+  steps: Array<{
+    action: string;
+    target?: string;
+    value?: string;
+    screenshot_url?: string;
+  }>;
+  entry_point: string;
+  exit_point?: string;
+  confidence: number;
+  discovered_at: string;
+  user_journey_type?: string;
+}
+
+interface DiscoveryFlowsResponse {
+  success: boolean;
+  flows: DiscoveryFlow[];
+  total_flows: number;
+  session_id?: string;
+  error?: string;
+}
+
+interface DiscoveryGenerateResponse {
+  success: boolean;
+  test: {
+    id: string;
+    name: string;
+    description: string;
+    steps: Array<{
+      action: string;
+      target?: string;
+      value?: string;
+    }>;
+    assertions: Array<{
+      type: string;
+      target?: string;
+      expected?: string;
+    }>;
+  };
+  flow_id: string;
+  confidence: number;
+  error?: string;
+}
+
+interface DiscoveryCompareResponse {
+  success: boolean;
+  comparison: {
+    session_1: {
+      session_id: string;
+      pages_count: number;
+      flows_count: number;
+      timestamp: string;
+    };
+    session_2: {
+      session_id: string;
+      pages_count: number;
+      flows_count: number;
+      timestamp: string;
+    };
+    new_flows: string[];
+    removed_flows: string[];
+    changed_flows: Array<{
+      flow_id: string;
+      changes: string[];
+    }>;
+    summary: string;
+  };
+  error?: string;
+}
+
+// CI/CD Response types (RAP-276)
+interface CICDChangedFile {
+  path: string;
+  change_type: string;
+  additions: number;
+  deletions: number;
+  impact_score?: number;
+}
+
+interface CICDImpactedTest {
+  test_id: string;
+  test_name: string;
+  impact_score: number;
+  reason: string;
+  priority: string;
+}
+
+interface CICDTestImpactResponse {
+  id: string;
+  project_id: string;
+  commit_sha: string;
+  branch: string;
+  base_sha?: string;
+  changed_files: CICDChangedFile[];
+  impacted_tests: CICDImpactedTest[];
+  total_files_changed: number;
+  total_tests_impacted: number;
+  recommended_tests: string[];
+  skip_candidates: string[];
+  confidence_score: number;
+  analysis_time_ms: number;
+  created_at: string;
+}
+
+interface CICDRiskFactor {
+  category: string;
+  severity: string;
+  description: string;
+  score: number;
+}
+
+interface CICDDeploymentRiskResponse {
+  project_id: string;
+  commit_sha?: string;
+  risk_score: number;
+  risk_level: string;
+  factors: Record<string, number | string | null>;
+  recommendations: string[];
+  tests_to_run: number;
+  skip_candidates: number;
+  created_at: string;
+}
+
+interface CICDBuild {
+  id: string;
+  project_id: string;
+  pipeline_id?: string;
+  provider: string;
+  build_number: number;
+  name: string;
+  branch: string;
+  status: string;
+  commit_sha: string;
+  commit_message?: string;
+  commit_author?: string;
+  tests_total: number;
+  tests_passed: number;
+  tests_failed: number;
+  tests_skipped: number;
+  coverage_percent?: number;
+  artifact_urls: string[];
+  logs_url?: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+interface CICDBuildsResponse {
+  builds: CICDBuild[];
+  total: number;
+}
+
+interface CICDPipelineStage {
+  id: string;
+  name: string;
+  status: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_seconds?: number;
+  jobs: Array<Record<string, unknown>>;
+}
+
+interface CICDPipeline {
+  id: string;
+  project_id: string;
+  workflow_id?: string;
+  workflow_name?: string;
+  run_number?: number;
+  branch?: string;
+  commit_sha?: string;
+  commit_message?: string;
+  status: string;
+  conclusion?: string;
+  event?: string;
+  actor?: string;
+  html_url?: string;
+  created_at: string;
+  updated_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  stages: CICDPipelineStage[];
+}
+
+interface CICDPipelinesResponse {
+  pipelines: CICDPipeline[];
+  total: number;
+}
+
+// Time Travel Debugging Response types
+interface TimeTravelCheckpoint {
+  checkpoint_id: string;
+  thread_id: string;
+  node_name: string;
+  created_at: string;
+  state_summary: {
+    test_count?: number;
+    failures_count?: number;
+    current_step?: string;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+interface TimeTravelCheckpointsResponse {
+  checkpoints: TimeTravelCheckpoint[];
+  total: number;
+  project_id: string;
+}
+
+interface TimeTravelHistoryEntry {
+  checkpoint_id: string;
+  node_name: string;
+  transition_from?: string;
+  created_at: string;
+  state?: Record<string, unknown>;
+  changes?: {
+    field: string;
+    old_value: unknown;
+    new_value: unknown;
+  }[];
+}
+
+interface TimeTravelHistoryResponse {
+  thread_id: string;
+  history: TimeTravelHistoryEntry[];
+  total_entries: number;
+}
+
+interface TimeTravelReplayResponse {
+  success: boolean;
+  new_thread_id: string;
+  checkpoint_id: string;
+  status: string;
+  message?: string;
+}
+
+interface TimeTravelForkResponse {
+  success: boolean;
+  forked_thread_id: string;
+  branch_name: string;
+  checkpoint_id: string;
+  message?: string;
+}
+
+interface TimeTravelCompareResponse {
+  thread_id_1: string;
+  thread_id_2: string;
+  divergence_point?: {
+    checkpoint_id: string;
+    node_name: string;
+    timestamp: string;
+  };
+  differences: Array<{
+    field: string;
+    thread_1_value: unknown;
+    thread_2_value: unknown;
+    first_diverged_at: string;
+  }>;
+  summary: {
+    total_differences: number;
+    thread_1_steps: number;
+    thread_2_steps: number;
+  };
+}
+
+// Visual AI Testing Response types (RAP-279)
+interface VisualCaptureResponse {
+  success: boolean;
+  screenshot_id: string;
+  url: string;
+  screenshot_url: string;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  captured_at: string;
+  metadata?: {
+    title?: string;
+    load_time_ms?: number;
+    dom_elements?: number;
+  };
+  error?: string;
+}
+
+interface VisualCompareResponse {
+  success: boolean;
+  comparison_id: string;
+  baseline_id: string;
+  screenshot_id: string;
+  match_percentage: number;
+  is_match: boolean;
+  diff_image_url?: string;
+  differences: Array<{
+    region: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    type: string;
+    severity: string;
+    description: string;
+  }>;
+  ai_analysis?: {
+    summary: string;
+    visual_changes: string[];
+    impact_assessment: string;
+    recommendation: string;
+  };
+  comparison_time_ms: number;
+  error?: string;
+}
+
+interface VisualBaselineResponse {
+  success: boolean;
+  baseline_id: string;
+  name: string;
+  description?: string;
+  screenshot_id: string;
+  screenshot_url: string;
+  project_id: string;
+  created_at: string;
+  updated_at?: string;
+  error?: string;
+}
+
+interface VisualBaselinesResponse {
+  baselines: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    screenshot_url: string;
+    url: string;
+    viewport: {
+      width: number;
+      height: number;
+    };
+    created_at: string;
+    updated_at?: string;
+    comparison_count: number;
+  }>;
+  total: number;
+  project_id: string;
+}
+
+interface VisualAnalyzeResponse {
+  success: boolean;
+  screenshot_id: string;
+  analysis: {
+    visual_elements: Array<{
+      type: string;
+      description: string;
+      bounding_box: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      };
+      confidence: number;
+    }>;
+    layout_assessment: {
+      structure: string;
+      responsiveness: string;
+      visual_hierarchy: string;
+    };
+    color_analysis?: {
+      dominant_colors: string[];
+      contrast_ratio?: number;
+      color_scheme: string;
+    };
+  };
+  wcag_compliance?: {
+    level: string;
+    score: number;
+    issues: Array<{
+      rule: string;
+      severity: string;
+      description: string;
+      element?: string;
+      recommendation: string;
+    }>;
+    passed_criteria: number;
+    failed_criteria: number;
+    warnings: number;
+  };
+  recommendations: string[];
+  analysis_time_ms: number;
+  error?: string;
 }
 
 // Argus API Response types
@@ -3976,6 +4422,1068 @@ Recent events: ${eventsResult.events?.map(e => e.title).join(", ") || "None"}
       }
     );
 
+
+    // =====================================================
+    // CI/CD INTEGRATION TOOLS (RAP-276)
+    // =====================================================
+
+    // Tool: argus_cicd_test_impact - Analyze which tests are affected by code changes
+    this.server.tool(
+      "argus_cicd_test_impact",
+      "Analyze which tests are affected by code changes in a commit. Uses AI to determine test impact based on changed files, dependencies, and historical patterns. Returns prioritized list of tests to run.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        commit_sha: z.string().describe("Git commit SHA to analyze"),
+        branch: z.string().optional().default("main").describe("Git branch name"),
+        changed_files: z.array(z.object({
+          path: z.string().describe("File path"),
+          change_type: z.enum(["added", "modified", "deleted", "renamed"]).optional().default("modified").describe("Type of change"),
+          additions: z.number().optional().default(0).describe("Lines added"),
+          deletions: z.number().optional().default(0).describe("Lines deleted"),
+        })).describe("Array of changed files in the commit"),
+      },
+      async ({ project_id, commit_sha, branch, changed_files }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<CICDTestImpactResponse>(
+            "/api/v1/cicd/test-impact/analyze",
+            "POST",
+            {
+              project_id,
+              commit_sha,
+              branch,
+              changed_files,
+            }
+          );
+
+          const confidenceEmoji = result.confidence_score > 0.8 ? "🟢" : result.confidence_score > 0.5 ? "🟡" : "🔴";
+
+          let output = `# Test Impact Analysis\n\n`;
+          output += `**Commit**: \`${result.commit_sha.substring(0, 7)}\` on \`${result.branch}\`\n`;
+          output += `**Confidence**: ${confidenceEmoji} ${(result.confidence_score * 100).toFixed(0)}%\n`;
+          output += `**Analysis Time**: ${result.analysis_time_ms}ms\n\n`;
+
+          output += `## Summary\n\n`;
+          output += `| Metric | Value |\n|--------|-------|\n`;
+          output += `| Files Changed | ${result.total_files_changed} |\n`;
+          output += `| Tests Impacted | ${result.total_tests_impacted} |\n`;
+          output += `| Recommended to Run | ${result.recommended_tests.length} |\n`;
+          output += `| Safe to Skip | ${result.skip_candidates.length} |\n\n`;
+
+          if (result.changed_files && result.changed_files.length > 0) {
+            output += `## Changed Files\n\n`;
+            output += `| File | Type | +/- |\n|------|------|-----|\n`;
+            result.changed_files.slice(0, 10).forEach((file) => {
+              output += `| \`${file.path}\` | ${file.change_type} | +${file.additions}/-${file.deletions} |\n`;
+            });
+            if (result.changed_files.length > 10) {
+              output += `\n_...and ${result.changed_files.length - 10} more files_\n`;
+            }
+            output += `\n`;
+          }
+
+          if (result.impacted_tests && result.impacted_tests.length > 0) {
+            output += `## Impacted Tests\n\n`;
+            output += `| Test | Impact | Priority | Reason |\n|------|--------|----------|--------|\n`;
+            result.impacted_tests.slice(0, 15).forEach((test) => {
+              const impactEmoji = test.impact_score > 0.7 ? "🔴" : test.impact_score > 0.4 ? "🟡" : "🟢";
+              output += `| ${test.test_name} | ${impactEmoji} ${(test.impact_score * 100).toFixed(0)}% | ${test.priority} | ${test.reason} |\n`;
+            });
+            if (result.impacted_tests.length > 15) {
+              output += `\n_...and ${result.impacted_tests.length - 15} more tests_\n`;
+            }
+            output += `\n`;
+          }
+
+          if (result.recommended_tests && result.recommended_tests.length > 0) {
+            output += `## Recommended Test Order\n\n`;
+            output += `Run these tests first (highest impact):\n`;
+            result.recommended_tests.slice(0, 10).forEach((testId, i) => {
+              output += `${i + 1}. \`${testId}\`\n`;
+            });
+            output += `\n`;
+          }
+
+          if (result.skip_candidates && result.skip_candidates.length > 0) {
+            output += `## Safe to Skip\n\n`;
+            output += `These tests are unlikely to be affected:\n`;
+            result.skip_candidates.slice(0, 5).forEach((testId) => {
+              output += `- \`${testId}\`\n`;
+            });
+            if (result.skip_candidates.length > 5) {
+              output += `\n_...and ${result.skip_candidates.length - 5} more_\n`;
+            }
+          }
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_cicd_deployment_risk - Get deployment risk assessment
+    this.server.tool(
+      "argus_cicd_deployment_risk",
+      "Calculate deployment risk score for a project or specific commit. Analyzes CI/CD failure rates, test coverage, code complexity, and historical patterns to assess deployment safety.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        commit_sha: z.string().optional().describe("Specific commit SHA to assess (optional)"),
+        branch: z.string().optional().describe("Git branch name (optional)"),
+      },
+      async ({ project_id, commit_sha, branch }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({ project_id });
+          if (commit_sha) params.set("commit_sha", commit_sha);
+          if (branch) params.set("branch", branch);
+
+          const result = await this.callBrainAPIWithAuth<CICDDeploymentRiskResponse>(
+            `/api/v1/cicd/deployment-risk?${params}`,
+            "GET"
+          );
+
+          const riskEmoji = result.risk_level === "critical" ? "🔴" : result.risk_level === "high" ? "🟠" : result.risk_level === "medium" ? "🟡" : "🟢";
+          const riskBar = "█".repeat(Math.floor(result.risk_score / 10)) + "░".repeat(10 - Math.floor(result.risk_score / 10));
+
+          let output = `# Deployment Risk Assessment\n\n`;
+          output += `## Risk Score: ${riskEmoji} ${result.risk_score}/100\n\n`;
+          output += `\`[${riskBar}]\` **${result.risk_level.toUpperCase()}**\n\n`;
+
+          if (result.commit_sha) {
+            output += `**Commit**: \`${result.commit_sha.substring(0, 7)}\`\n`;
+          }
+          output += `**Project**: ${result.project_id}\n\n`;
+
+          output += `## Risk Factors\n\n`;
+          output += `| Factor | Value |\n|--------|-------|\n`;
+          for (const [key, value] of Object.entries(result.factors)) {
+            const displayKey = key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+            const displayValue = value === null ? "N/A" : typeof value === "number" ? `${value.toFixed(1)}%` : String(value);
+            output += `| ${displayKey} | ${displayValue} |\n`;
+          }
+          output += `\n`;
+
+          output += `## Test Recommendations\n\n`;
+          output += `- **Tests to Run**: ${result.tests_to_run}\n`;
+          output += `- **Safe to Skip**: ${result.skip_candidates}\n\n`;
+
+          if (result.recommendations && result.recommendations.length > 0) {
+            output += `## Recommendations\n\n`;
+            result.recommendations.forEach((rec, i) => {
+              output += `${i + 1}. ${rec}\n`;
+            });
+            output += `\n`;
+          }
+
+          // Add deployment guidance based on risk level
+          output += `## Deployment Guidance\n\n`;
+          if (result.risk_level === "low") {
+            output += `✅ **Safe to Deploy** - Low risk detected. Proceed with standard deployment process.\n`;
+          } else if (result.risk_level === "medium") {
+            output += `⚠️ **Deploy with Caution** - Medium risk detected. Consider running recommended tests before deployment.\n`;
+          } else if (result.risk_level === "high") {
+            output += `🟠 **Review Required** - High risk detected. Run all impacted tests and get approval before deploying.\n`;
+          } else {
+            output += `🔴 **Deployment Not Recommended** - Critical risk detected. Address issues before attempting deployment.\n`;
+          }
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_cicd_builds - List build history
+    this.server.tool(
+      "argus_cicd_builds",
+      "List CI/CD build history for a project. Shows build status, test results, coverage, and timing information.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        limit: z.number().optional().default(20).describe("Maximum number of builds to return (default: 20)"),
+        status: z.enum(["pending", "running", "success", "failed", "cancelled", "skipped"]).optional().describe("Filter by build status"),
+      },
+      async ({ project_id, limit, status }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({
+            project_id,
+            limit: limit.toString(),
+          });
+          if (status) params.set("status", status);
+
+          const result = await this.callBrainAPIWithAuth<CICDBuildsResponse>(
+            `/api/v1/cicd/builds?${params}`,
+            "GET"
+          );
+
+          if (!result.builds || result.builds.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `# CI/CD Builds\n\nNo builds found for this project.${status ? ` (filtered by status: ${status})` : ""}`,
+              }],
+            };
+          }
+
+          let output = `# CI/CD Builds\n\n`;
+          output += `**Total**: ${result.total} builds${status ? ` (showing ${status} only)` : ""}\n\n`;
+
+          // Calculate stats
+          const successCount = result.builds.filter((b) => b.status === "success").length;
+          const failedCount = result.builds.filter((b) => b.status === "failed").length;
+          const successRate = result.builds.length > 0 ? ((successCount / result.builds.length) * 100).toFixed(0) : "0";
+
+          output += `## Quick Stats\n\n`;
+          output += `| Metric | Value |\n|--------|-------|\n`;
+          output += `| Success Rate | ${successRate}% |\n`;
+          output += `| Passed | ${successCount} |\n`;
+          output += `| Failed | ${failedCount} |\n\n`;
+
+          output += `## Recent Builds\n\n`;
+          output += `| # | Branch | Status | Tests | Coverage | Duration |\n`;
+          output += `|---|--------|--------|-------|----------|----------|\n`;
+
+          result.builds.slice(0, limit).forEach((build) => {
+            const statusEmoji = build.status === "success" ? "✅" : build.status === "failed" ? "❌" : build.status === "running" ? "🔄" : "⏸️";
+            const tests = `${build.tests_passed}/${build.tests_total}`;
+            const coverage = build.coverage_percent !== null && build.coverage_percent !== undefined ? `${build.coverage_percent.toFixed(0)}%` : "-";
+            const duration = build.duration_ms ? `${(build.duration_ms / 1000).toFixed(0)}s` : "-";
+            const branchShort = build.branch.length > 20 ? build.branch.substring(0, 17) + "..." : build.branch;
+            output += `| ${build.build_number} | \`${branchShort}\` | ${statusEmoji} ${build.status} | ${tests} | ${coverage} | ${duration} |\n`;
+          });
+
+          output += `\n`;
+
+          // Show last failed build details if any
+          const lastFailed = result.builds.find((b) => b.status === "failed");
+          if (lastFailed) {
+            output += `## Last Failed Build (#${lastFailed.build_number})\n\n`;
+            output += `- **Branch**: \`${lastFailed.branch}\`\n`;
+            output += `- **Commit**: \`${lastFailed.commit_sha.substring(0, 7)}\`\n`;
+            if (lastFailed.commit_message) {
+              output += `- **Message**: ${lastFailed.commit_message.substring(0, 80)}${lastFailed.commit_message.length > 80 ? "..." : ""}\n`;
+            }
+            output += `- **Tests Failed**: ${lastFailed.tests_failed}\n`;
+            if (lastFailed.logs_url) {
+              output += `- **Logs**: ${lastFailed.logs_url}\n`;
+            }
+          }
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_cicd_pipelines - View CI/CD pipeline status
+    this.server.tool(
+      "argus_cicd_pipelines",
+      "View CI/CD pipeline status and history. Shows workflow runs, stages, and their outcomes from GitHub Actions or other CI providers.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        limit: z.number().optional().default(20).describe("Maximum number of pipelines to return (default: 20)"),
+        status: z.enum(["queued", "in_progress", "completed", "cancelled"]).optional().describe("Filter by pipeline status"),
+      },
+      async ({ project_id, limit, status }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({
+            project_id,
+            limit: limit.toString(),
+          });
+          if (status) params.set("status", status);
+
+          const result = await this.callBrainAPIWithAuth<CICDPipelinesResponse>(
+            `/api/v1/cicd/pipelines?${params}`,
+            "GET"
+          );
+
+          if (!result.pipelines || result.pipelines.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `# CI/CD Pipelines\n\nNo pipelines found for this project.${status ? ` (filtered by status: ${status})` : ""}`,
+              }],
+            };
+          }
+
+          let output = `# CI/CD Pipelines\n\n`;
+          output += `**Total**: ${result.total} pipelines${status ? ` (showing ${status} only)` : ""}\n\n`;
+
+          // Calculate stats
+          const successCount = result.pipelines.filter((p) => p.conclusion === "success").length;
+          const failedCount = result.pipelines.filter((p) => p.conclusion === "failure").length;
+          const inProgress = result.pipelines.filter((p) => p.status === "in_progress").length;
+
+          output += `## Status Overview\n\n`;
+          output += `| Status | Count |\n|--------|-------|\n`;
+          output += `| ✅ Success | ${successCount} |\n`;
+          output += `| ❌ Failed | ${failedCount} |\n`;
+          output += `| 🔄 In Progress | ${inProgress} |\n\n`;
+
+          output += `## Recent Pipelines\n\n`;
+
+          result.pipelines.slice(0, limit).forEach((pipeline, i) => {
+            const statusEmoji = pipeline.status === "completed"
+              ? (pipeline.conclusion === "success" ? "✅" : pipeline.conclusion === "failure" ? "❌" : "⏹️")
+              : pipeline.status === "in_progress" ? "🔄" : "⏸️";
+
+            output += `### ${i + 1}. ${statusEmoji} ${pipeline.workflow_name || "Pipeline"} #${pipeline.run_number || pipeline.id.substring(0, 8)}\n\n`;
+            output += `- **Status**: ${pipeline.status}${pipeline.conclusion ? ` (${pipeline.conclusion})` : ""}\n`;
+            if (pipeline.branch) output += `- **Branch**: \`${pipeline.branch}\`\n`;
+            if (pipeline.commit_sha) output += `- **Commit**: \`${pipeline.commit_sha.substring(0, 7)}\`\n`;
+            if (pipeline.actor) output += `- **Triggered by**: ${pipeline.actor}\n`;
+            if (pipeline.event) output += `- **Event**: ${pipeline.event}\n`;
+            if (pipeline.html_url) output += `- **URL**: ${pipeline.html_url}\n`;
+
+            if (pipeline.stages && pipeline.stages.length > 0) {
+              output += `- **Stages**:\n`;
+              pipeline.stages.forEach((stage) => {
+                const stageEmoji = stage.status === "success" ? "✅" : stage.status === "failure" ? "❌" : stage.status === "running" ? "🔄" : "⏸️";
+                const duration = stage.duration_seconds ? ` (${stage.duration_seconds}s)` : "";
+                output += `  - ${stageEmoji} ${stage.name}${duration}\n`;
+              });
+            }
+
+            output += `\n`;
+          });
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // =====================================================
+    // CORRELATION & ANALYTICS TOOLS (RAP-281)
+    // =====================================================
+
+    // Tool: argus_correlations_timeline - Get unified SDLC event timeline
+    this.server.tool(
+      "argus_correlations_timeline",
+      "View unified timeline of SDLC events across all integrations. Shows commits, PRs, deployments, errors, and incidents in chronological order. Enables cross-platform correlation analysis.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        days: z.number().optional().default(7).describe("Number of days to look back (1-90, default: 7)"),
+        event_types: z.array(z.string()).optional().describe("Filter by event types (e.g., ['commit', 'deploy', 'error', 'incident'])"),
+        limit: z.number().optional().default(50).describe("Maximum events to return (default: 50)"),
+      },
+      async ({ project_id, days, event_types, limit }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({
+            project_id,
+            days: (days || 7).toString(),
+            limit: (limit || 50).toString(),
+          });
+          if (event_types && event_types.length > 0) {
+            event_types.forEach(t => params.append("event_types", t));
+          }
+
+          const result = await this.callBrainAPIWithAuth<{
+            events: Array<{
+              id: string;
+              event_type: string;
+              source_platform: string;
+              external_id: string;
+              external_url?: string;
+              title?: string;
+              occurred_at: string;
+              commit_sha?: string;
+              pr_number?: number;
+              jira_key?: string;
+              deploy_id?: string;
+              data: Record<string, unknown>;
+            }>;
+            total_count: number;
+          }>(
+            `/api/v1/correlations/timeline?${params}`,
+            "GET"
+          );
+
+          if (!result.events || result.events.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## SDLC Timeline\n\nNo events found for the last ${days} day(s).\n\n**Tip:** Connect integrations (GitHub, Sentry, Jira) to see events in the timeline.`,
+              }],
+            };
+          }
+
+          let output = `# SDLC Event Timeline\n\n`;
+          output += `**Period:** Last ${days} day(s)\n`;
+          output += `**Total Events:** ${result.total_count}\n`;
+          if (event_types && event_types.length > 0) {
+            output += `**Filtered by:** ${event_types.join(", ")}\n`;
+          }
+          output += `\n---\n\n`;
+
+          // Group events by date
+          const eventsByDate: Record<string, typeof result.events> = {};
+          result.events.forEach((event) => {
+            const date = new Date(event.occurred_at).toISOString().split("T")[0];
+            if (!eventsByDate[date]) {
+              eventsByDate[date] = [];
+            }
+            eventsByDate[date].push(event);
+          });
+
+          for (const [date, events] of Object.entries(eventsByDate)) {
+            output += `## ${date}\n\n`;
+
+            events.forEach((event) => {
+              const typeEmoji = {
+                commit: "📝",
+                pr: "🔀",
+                deploy: "🚀",
+                error: "❌",
+                incident: "🚨",
+                test_run: "🧪",
+                build: "🔨",
+                requirement: "📋",
+              }[event.event_type] || "📌";
+
+              const time = new Date(event.occurred_at).toLocaleTimeString("en-US", {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+
+              output += `**${time}** ${typeEmoji} **${event.event_type.toUpperCase()}** - ${event.title || event.external_id}\n`;
+              output += `- Source: ${event.source_platform}\n`;
+              if (event.commit_sha) output += `- Commit: \`${event.commit_sha.substring(0, 7)}\`\n`;
+              if (event.pr_number) output += `- PR: #${event.pr_number}\n`;
+              if (event.jira_key) output += `- Jira: ${event.jira_key}\n`;
+              if (event.external_url) output += `- [View](${event.external_url})\n`;
+              output += `\n`;
+            });
+          }
+
+          output += `---\n`;
+          output += `**Tip:** Use \`argus_correlations_root_cause\` with an event ID to trace its root cause.\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_correlations_root_cause - AI root cause analysis
+    this.server.tool(
+      "argus_correlations_root_cause",
+      "Perform AI-powered root cause analysis for an error or incident. Traces back through the event timeline to find commits, deployments, or other changes that may have caused the issue.",
+      {
+        event_id: z.string().describe("The event ID to analyze (typically an error or incident)"),
+        hours_before: z.number().optional().default(48).describe("Hours to look back for potential causes (default: 48)"),
+      },
+      async ({ event_id, hours_before }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({
+            hours_before: (hours_before || 48).toString(),
+          });
+
+          const result = await this.callBrainAPIWithAuth<{
+            target_event: {
+              id: string;
+              event_type: string;
+              source_platform: string;
+              title?: string;
+              occurred_at: string;
+            };
+            root_cause_chain: Array<{
+              event: {
+                id: string;
+                event_type: string;
+                title?: string;
+                occurred_at: string;
+                external_url?: string;
+              };
+              correlation_type?: string;
+              confidence: number;
+            }>;
+            likely_root_cause?: {
+              id: string;
+              event_type: string;
+              title?: string;
+              occurred_at: string;
+              external_url?: string;
+            };
+            confidence: number;
+            analysis_summary: string;
+          }>(
+            `/api/v1/correlations/root-cause/${event_id}?${params}`,
+            "GET"
+          );
+
+          const confidenceEmoji = result.confidence > 0.7 ? "🟢" : result.confidence > 0.4 ? "🟡" : "🔴";
+
+          let output = `# Root Cause Analysis\n\n`;
+          output += `## Target Event\n\n`;
+          output += `- **Type:** ${result.target_event.event_type}\n`;
+          output += `- **Title:** ${result.target_event.title || "N/A"}\n`;
+          output += `- **Occurred:** ${result.target_event.occurred_at}\n`;
+          output += `- **Source:** ${result.target_event.source_platform}\n\n`;
+
+          output += `## Analysis\n\n`;
+          output += `${result.analysis_summary}\n\n`;
+          output += `**Confidence:** ${confidenceEmoji} ${(result.confidence * 100).toFixed(0)}%\n\n`;
+
+          if (result.likely_root_cause) {
+            output += `## Likely Root Cause\n\n`;
+            const rc = result.likely_root_cause;
+            output += `- **Type:** ${rc.event_type}\n`;
+            output += `- **Title:** ${rc.title || "N/A"}\n`;
+            output += `- **Occurred:** ${rc.occurred_at}\n`;
+            if (rc.external_url) {
+              output += `- [View Details](${rc.external_url})\n`;
+            }
+            output += `\n`;
+          }
+
+          if (result.root_cause_chain.length > 0) {
+            output += `## Event Chain (${result.root_cause_chain.length} related events)\n\n`;
+            output += `| # | Type | Title | Time | Confidence |\n`;
+            output += `|---|------|-------|------|------------|\n`;
+
+            result.root_cause_chain.forEach((item, i) => {
+              const confEmoji = item.confidence > 0.7 ? "🟢" : item.confidence > 0.4 ? "🟡" : "⚪";
+              const title = item.event.title || item.event.id.substring(0, 8);
+              output += `| ${i + 1} | ${item.event.event_type} | ${title} | ${new Date(item.event.occurred_at).toLocaleString()} | ${confEmoji} ${(item.confidence * 100).toFixed(0)}% |\n`;
+            });
+            output += `\n`;
+          }
+
+          output += `---\n`;
+          output += `**Actions:**\n`;
+          output += `- Use \`argus_correlations_insights\` to get AI-powered recommendations\n`;
+          output += `- Use \`argus_correlations_timeline\` to see the full event context\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_correlations_insights - Get AI-powered insights
+    this.server.tool(
+      "argus_correlations_insights",
+      "Get AI-generated insights from SDLC correlation analysis. Identifies patterns, risks, and recommendations based on commits, deployments, errors, and incidents.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        limit: z.number().optional().default(10).describe("Maximum insights to return (default: 10)"),
+        status: z.enum(["active", "acknowledged", "resolved", "dismissed"]).optional().default("active").describe("Filter by insight status"),
+      },
+      async ({ project_id, limit, status }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({
+            project_id,
+            limit: (limit || 10).toString(),
+            status: status || "active",
+          });
+
+          const result = await this.callBrainAPIWithAuth<Array<{
+            id: string;
+            insight_type: string;
+            severity: string;
+            title: string;
+            description: string;
+            recommendations: Array<{ action: string; priority: string }>;
+            event_ids: string[];
+            status: string;
+            created_at: string;
+          }>>(
+            `/api/v1/correlations/insights?${params}`,
+            "GET"
+          );
+
+          if (!result || result.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## AI Insights\n\nNo ${status} insights found for this project.\n\n**Tip:** Insights are generated automatically when patterns are detected in SDLC events. Connect more integrations to enable richer analysis.`,
+              }],
+            };
+          }
+
+          let output = `# AI-Powered Insights\n\n`;
+          output += `**Project:** ${project_id}\n`;
+          output += `**Showing:** ${result.length} ${status} insight(s)\n\n`;
+
+          result.forEach((insight, i) => {
+            const severityEmoji = {
+              critical: "🔴",
+              high: "🟠",
+              medium: "🟡",
+              low: "🟢",
+              info: "ℹ️",
+            }[insight.severity] || "⚪";
+
+            const typeEmoji = {
+              failure_cluster: "🔥",
+              deployment_risk: "🚀",
+              performance_trend: "📈",
+              coverage_gap: "🕳️",
+              recommendation: "💡",
+            }[insight.insight_type] || "📊";
+
+            output += `## ${i + 1}. ${typeEmoji} ${insight.title}\n\n`;
+            output += `**Severity:** ${severityEmoji} ${insight.severity.toUpperCase()}\n`;
+            output += `**Type:** ${insight.insight_type.replace(/_/g, " ")}\n`;
+            output += `**Created:** ${new Date(insight.created_at).toLocaleString()}\n\n`;
+            output += `${insight.description}\n\n`;
+
+            if (insight.recommendations && insight.recommendations.length > 0) {
+              output += `**Recommendations:**\n`;
+              insight.recommendations.forEach((rec, j) => {
+                output += `${j + 1}. ${rec.action} (${rec.priority} priority)\n`;
+              });
+              output += `\n`;
+            }
+
+            if (insight.event_ids && insight.event_ids.length > 0) {
+              output += `**Related Events:** ${insight.event_ids.length} event(s)\n`;
+            }
+
+            output += `**ID:** \`${insight.id}\`\n\n`;
+            output += `---\n\n`;
+          });
+
+          output += `**Actions:**\n`;
+          output += `- Use \`argus_correlations_root_cause\` to analyze specific events\n`;
+          output += `- Acknowledge/resolve insights via the dashboard\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_correlations_query - Natural language query for correlations
+    this.server.tool(
+      "argus_correlations_query",
+      "Query correlation data using natural language. Ask questions like 'What deployments caused errors last week?' or 'Show PRs without tests that failed in production'.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        query: z.string().describe("Natural language query (e.g., 'What caused the outage on Monday?')"),
+      },
+      async ({ project_id, query }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({
+            query,
+          });
+          if (project_id) {
+            params.set("project_id", project_id);
+          }
+
+          const result = await this.callBrainAPIWithAuth<{
+            query: string;
+            interpreted_as: string;
+            events: Array<{
+              id: string;
+              event_type: string;
+              title?: string;
+              occurred_at: string;
+              source_platform: string;
+            }>;
+            insights: string[];
+            suggested_actions: string[];
+          }>(
+            `/api/v1/correlations/query?${params}`,
+            "POST"
+          );
+
+          let output = `# Correlation Query Results\n\n`;
+          output += `**Your Query:** "${result.query}"\n`;
+          output += `**Interpreted As:** ${result.interpreted_as}\n\n`;
+
+          if (result.events && result.events.length > 0) {
+            output += `## Related Events (${result.events.length})\n\n`;
+            output += `| Type | Title | Source | Time |\n`;
+            output += `|------|-------|--------|------|\n`;
+
+            result.events.slice(0, 20).forEach((event) => {
+              const title = event.title || event.id.substring(0, 8);
+              output += `| ${event.event_type} | ${title} | ${event.source_platform} | ${new Date(event.occurred_at).toLocaleString()} |\n`;
+            });
+
+            if (result.events.length > 20) {
+              output += `\n_...and ${result.events.length - 20} more events_\n`;
+            }
+            output += `\n`;
+          } else {
+            output += `## No Events Found\n\nNo events matched your query.\n\n`;
+          }
+
+          if (result.insights && result.insights.length > 0) {
+            output += `## Insights\n\n`;
+            result.insights.forEach((insight, i) => {
+              output += `${i + 1}. ${insight}\n`;
+            });
+            output += `\n`;
+          }
+
+          if (result.suggested_actions && result.suggested_actions.length > 0) {
+            output += `## Suggested Actions\n\n`;
+            result.suggested_actions.forEach((action, i) => {
+              output += `${i + 1}. ${action}\n`;
+            });
+          }
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // =====================================================
+    // API TESTING TOOLS (RAP-282)
+    // =====================================================
+
+    // Tool: argus_api_discover - Discover API endpoints from OpenAPI spec
+    this.server.tool(
+      "argus_api_discover",
+      "Discover API endpoints from an OpenAPI/Swagger specification. Parses the spec and stores discovered endpoints for test generation.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        openapi_url: z.string().describe("URL to OpenAPI/Swagger spec (JSON or YAML)"),
+      },
+      async ({ project_id, openapi_url }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<{
+            success: boolean;
+            session_id: string;
+            endpoints_discovered: number;
+            endpoints: Array<{
+              id: string;
+              path: string;
+              method: string;
+              operation_id?: string;
+              summary?: string;
+              description?: string;
+              tags: string[];
+              auth_type: string;
+            }>;
+            spec_title?: string;
+            spec_version?: string;
+            errors: string[];
+          }>(
+            "/api/v1/api-tests/discover",
+            "POST",
+            {
+              project_id,
+              openapi_url,
+            }
+          );
+
+          const statusEmoji = result.success ? "✅" : result.endpoints_discovered > 0 ? "⚠️" : "❌";
+
+          let output = `# API Discovery Results ${statusEmoji}\n\n`;
+          output += `**Spec URL:** ${openapi_url}\n`;
+          if (result.spec_title) output += `**API Title:** ${result.spec_title}\n`;
+          if (result.spec_version) output += `**API Version:** ${result.spec_version}\n`;
+          output += `**Session ID:** \`${result.session_id}\`\n\n`;
+
+          output += `## Summary\n\n`;
+          output += `- **Endpoints Discovered:** ${result.endpoints_discovered}\n`;
+          output += `- **Errors:** ${result.errors.length}\n\n`;
+
+          if (result.endpoints && result.endpoints.length > 0) {
+            output += `## Discovered Endpoints\n\n`;
+            output += `| Method | Path | Summary | Auth |\n`;
+            output += `|--------|------|---------|------|\n`;
+
+            result.endpoints.forEach((ep) => {
+              const summary = ep.summary || ep.operation_id || "-";
+              const summaryShort = summary.length > 40 ? summary.substring(0, 37) + "..." : summary;
+              output += `| \`${ep.method}\` | \`${ep.path}\` | ${summaryShort} | ${ep.auth_type} |\n`;
+            });
+            output += `\n`;
+          }
+
+          if (result.errors.length > 0) {
+            output += `## Errors\n\n`;
+            result.errors.forEach((err) => {
+              output += `- ${err}\n`;
+            });
+            output += `\n`;
+          }
+
+          output += `---\n`;
+          output += `**Next Steps:**\n`;
+          output += `1. Use \`argus_api_generate\` to generate test cases for discovered endpoints\n`;
+          output += `2. Use \`argus_api_run\` to execute the generated tests\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_api_generate - Generate API test cases
+    this.server.tool(
+      "argus_api_generate",
+      "Generate API test cases using AI. Creates comprehensive tests covering happy paths, error cases, edge cases, and optionally security tests.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        endpoint_ids: z.array(z.string()).optional().describe("Specific endpoint IDs to generate tests for (all if not specified)"),
+        test_types: z.array(z.enum(["functional", "negative", "boundary", "security", "performance"])).optional().default(["functional", "negative", "boundary"]).describe("Types of tests to generate"),
+        include_security_tests: z.boolean().optional().default(false).describe("Include security/injection tests"),
+        max_tests_per_endpoint: z.number().optional().default(5).describe("Maximum tests per endpoint (1-20, default: 5)"),
+      },
+      async ({ project_id, endpoint_ids, test_types, include_security_tests, max_tests_per_endpoint }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<{
+            success: boolean;
+            tests_generated: number;
+            test_cases: Array<{
+              id: string;
+              name: string;
+              description: string;
+              endpoint: string;
+              method: string;
+              test_type: string;
+              expected_status: number;
+              tags: string[];
+            }>;
+            generation_time_ms: number;
+          }>(
+            "/api/v1/api-tests/generate",
+            "POST",
+            {
+              project_id,
+              endpoint_ids: endpoint_ids || null,
+              test_types: test_types || ["functional", "negative", "boundary"],
+              include_security_tests: include_security_tests || false,
+              max_tests_per_endpoint: max_tests_per_endpoint || 5,
+            }
+          );
+
+          const statusEmoji = result.success ? "✅" : "❌";
+
+          let output = `# API Test Generation ${statusEmoji}\n\n`;
+          output += `**Tests Generated:** ${result.tests_generated}\n`;
+          output += `**Generation Time:** ${result.generation_time_ms}ms\n`;
+          output += `**Test Types:** ${(test_types || ["functional", "negative", "boundary"]).join(", ")}\n`;
+          if (include_security_tests) output += `**Security Tests:** Included\n`;
+          output += `\n`;
+
+          if (result.test_cases && result.test_cases.length > 0) {
+            // Group by endpoint
+            const byEndpoint: Record<string, typeof result.test_cases> = {};
+            result.test_cases.forEach((tc) => {
+              const key = `${tc.method} ${tc.endpoint}`;
+              if (!byEndpoint[key]) {
+                byEndpoint[key] = [];
+              }
+              byEndpoint[key].push(tc);
+            });
+
+            output += `## Generated Tests\n\n`;
+
+            for (const [endpoint, tests] of Object.entries(byEndpoint)) {
+              output += `### ${endpoint}\n\n`;
+              output += `| Test Name | Type | Expected Status |\n`;
+              output += `|-----------|------|----------------|\n`;
+
+              tests.forEach((tc) => {
+                const nameShort = tc.name.length > 50 ? tc.name.substring(0, 47) + "..." : tc.name;
+                output += `| ${nameShort} | ${tc.test_type} | ${tc.expected_status} |\n`;
+              });
+              output += `\n`;
+            }
+          }
+
+          output += `---\n`;
+          output += `**Next Steps:**\n`;
+          output += `- Use \`argus_api_run\` to execute these tests against your API\n`;
+          output += `- View and edit tests in the Argus dashboard\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_api_run - Execute API tests
+    this.server.tool(
+      "argus_api_run",
+      "Execute API tests against a target URL. Validates response status codes, schemas, and latency. Returns detailed results for each test.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        base_url: z.string().describe("Base URL for API requests (e.g., https://api.example.com)"),
+        test_ids: z.array(z.string()).optional().describe("Specific test IDs to run (all active tests if not specified)"),
+        auth_token: z.string().optional().describe("Bearer token for authentication"),
+        auth_type: z.enum(["none", "bearer", "basic", "api_key"]).optional().default("none").describe("Authentication type"),
+        environment: z.string().optional().default("test").describe("Environment name for result tracking"),
+        parallel: z.boolean().optional().default(false).describe("Run tests in parallel"),
+        stop_on_failure: z.boolean().optional().default(false).describe("Stop execution on first failure"),
+      },
+      async ({ project_id, base_url, test_ids, auth_token, auth_type, environment, parallel, stop_on_failure }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<{
+            success: boolean;
+            run_id: string;
+            total_tests: number;
+            passed: number;
+            failed: number;
+            errors: number;
+            skipped: number;
+            total_duration_ms: number;
+            results: Array<{
+              test_id: string;
+              test_name: string;
+              status: string;
+              duration_ms: number;
+              response_status?: number;
+              response_time_ms?: number;
+              error_message?: string;
+              schema_valid?: boolean;
+            }>;
+          }>(
+            "/api/v1/api-tests/run",
+            "POST",
+            {
+              project_id,
+              base_url,
+              test_ids: test_ids || null,
+              auth_token: auth_token || null,
+              auth_type: auth_type || "none",
+              auth_config: {},
+              environment: environment || "test",
+              parallel: parallel || false,
+              stop_on_failure: stop_on_failure || false,
+              timeout_ms: 30000,
+            }
+          );
+
+          const passRate = result.total_tests > 0
+            ? ((result.passed / result.total_tests) * 100).toFixed(0)
+            : "0";
+          const statusEmoji = result.success ? "✅" : result.passed > 0 ? "⚠️" : "❌";
+          const passRateEmoji = parseFloat(passRate) >= 90 ? "🟢" : parseFloat(passRate) >= 70 ? "🟡" : "🔴";
+
+          let output = `# API Test Results ${statusEmoji}\n\n`;
+          output += `**Run ID:** \`${result.run_id}\`\n`;
+          output += `**Base URL:** ${base_url}\n`;
+          output += `**Environment:** ${environment || "test"}\n`;
+          output += `**Duration:** ${result.total_duration_ms}ms\n\n`;
+
+          output += `## Summary\n\n`;
+          output += `| Metric | Value |\n|--------|-------|\n`;
+          output += `| Pass Rate | ${passRateEmoji} ${passRate}% |\n`;
+          output += `| Total Tests | ${result.total_tests} |\n`;
+          output += `| ✅ Passed | ${result.passed} |\n`;
+          output += `| ❌ Failed | ${result.failed} |\n`;
+          output += `| ⚠️ Errors | ${result.errors} |\n`;
+          output += `| ⏭️ Skipped | ${result.skipped} |\n\n`;
+
+          if (result.results && result.results.length > 0) {
+            // Show failed tests first
+            const failed = result.results.filter(r => r.status === "failed" || r.status === "error");
+            const passed = result.results.filter(r => r.status === "passed");
+            const other = result.results.filter(r => r.status !== "passed" && r.status !== "failed" && r.status !== "error");
+
+            if (failed.length > 0) {
+              output += `## Failed Tests (${failed.length})\n\n`;
+              output += `| Test | Status | Response | Time | Error |\n`;
+              output += `|------|--------|----------|------|-------|\n`;
+
+              failed.forEach((r) => {
+                const statusIcon = r.status === "failed" ? "❌" : "⚠️";
+                const nameShort = r.test_name.length > 30 ? r.test_name.substring(0, 27) + "..." : r.test_name;
+                const errorShort = r.error_message
+                  ? (r.error_message.length > 30 ? r.error_message.substring(0, 27) + "..." : r.error_message)
+                  : "-";
+                output += `| ${nameShort} | ${statusIcon} ${r.status} | ${r.response_status || "-"} | ${r.response_time_ms || "-"}ms | ${errorShort} |\n`;
+              });
+              output += `\n`;
+            }
+
+            if (passed.length > 0 && passed.length <= 10) {
+              output += `## Passed Tests (${passed.length})\n\n`;
+              output += `| Test | Response | Time | Schema |\n`;
+              output += `|------|----------|------|--------|\n`;
+
+              passed.forEach((r) => {
+                const nameShort = r.test_name.length > 40 ? r.test_name.substring(0, 37) + "..." : r.test_name;
+                const schemaIcon = r.schema_valid === true ? "✅" : r.schema_valid === false ? "❌" : "-";
+                output += `| ${nameShort} | ${r.response_status} | ${r.response_time_ms}ms | ${schemaIcon} |\n`;
+              });
+              output += `\n`;
+            } else if (passed.length > 10) {
+              output += `## Passed Tests (${passed.length})\n\n`;
+              output += `_${passed.length} tests passed. View details in the dashboard._\n\n`;
+            }
+
+            if (other.length > 0) {
+              output += `## Other Results (${other.length})\n\n`;
+              other.forEach((r) => {
+                output += `- **${r.test_name}**: ${r.status}${r.error_message ? ` - ${r.error_message}` : ""}\n`;
+              });
+              output += `\n`;
+            }
+          }
+
+          output += `---\n`;
+          output += `**Actions:**\n`;
+          output += `- View detailed results in the Argus dashboard\n`;
+          output += `- Re-run failed tests with \`argus_api_run\` and specific test_ids\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
     // =====================================================
     // INFRASTRUCTURE & COST MANAGEMENT TOOLS
     // =====================================================
@@ -4239,6 +5747,1362 @@ Recent events: ${eventsResult.events?.map(e => e.title).join(", ") || "None"}
         }
       }
     );
+
+    // =========================================================================
+    // DISCOVERY & INTELLIGENT CRAWLING TOOLS
+    // =========================================================================
+
+    // Tool: argus_discovery_start - Start autonomous app crawling session
+    this.server.tool(
+      "argus_discovery_start",
+      "Start an autonomous app crawling session. The AI agent will explore your application, discover user flows, interactive elements, and potential test scenarios. Great for understanding a new app or finding untested paths.",
+      {
+        project_id: z.string().describe("The project UUID to associate discovered flows with"),
+        start_url: z.string().url().describe("The starting URL for the crawl (e.g., your app's homepage or login page)"),
+        max_pages: z.number().optional().default(50).describe("Maximum number of pages to crawl (default: 50)"),
+        timeout_seconds: z.number().optional().default(300).describe("Maximum time for the crawl session in seconds (default: 300)"),
+      },
+      async ({ project_id, start_url, max_pages, timeout_seconds }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<DiscoveryStartResponse>(
+            "/api/v1/discovery/start",
+            "POST",
+            {
+              project_id,
+              start_url,
+              max_pages,
+              timeout_seconds,
+            }
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Discovery Failed\n\n${result.error || "Unknown error occurred while starting discovery session."}`,
+              }],
+              isError: true,
+            };
+          }
+
+          let output = `## Discovery Session Started\n\n`;
+          output += `**Session ID:** \`${result.session_id}\`\n`;
+          output += `**Status:** ${result.status}\n`;
+          output += `**Start URL:** ${start_url}\n`;
+          output += `**Max Pages:** ${max_pages}\n`;
+          output += `**Timeout:** ${timeout_seconds}s\n\n`;
+
+          if (result.estimated_completion) {
+            output += `**Estimated Completion:** ${result.estimated_completion}\n\n`;
+          }
+
+          output += `### Next Steps\n\n`;
+          output += `1. Use \`argus_discovery_flows\` with session_id \`${result.session_id}\` to view discovered flows\n`;
+          output += `2. Use \`argus_discovery_generate\` to create tests from discovered flows\n`;
+          output += `3. Use \`argus_discovery_compare\` to compare with previous sessions\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_discovery_flows - Get AI-discovered user flows
+    this.server.tool(
+      "argus_discovery_flows",
+      "Get user flows discovered by the AI crawling agent. Shows navigation paths, form submissions, and interactive sequences found during discovery. Use this to understand what the AI found in your application.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        session_id: z.string().optional().describe("Filter by specific discovery session ID (optional)"),
+        limit: z.number().optional().default(20).describe("Maximum number of flows to return (default: 20)"),
+      },
+      async ({ project_id, session_id, limit }) => {
+        try {
+          await this.requireAuth();
+
+          let endpoint = `/api/v1/discovery/flows?project_id=${project_id}&limit=${limit}`;
+          if (session_id) {
+            endpoint += `&session_id=${session_id}`;
+          }
+
+          const result = await this.callBrainAPIWithAuth<DiscoveryFlowsResponse>(
+            endpoint,
+            "GET"
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Discovery Flows Error\n\n${result.error || "Failed to retrieve discovered flows."}`,
+              }],
+              isError: true,
+            };
+          }
+
+          if (!result.flows || result.flows.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## No Flows Discovered\n\nNo user flows have been discovered yet for this project.\n\n**Tip:** Run \`argus_discovery_start\` to begin discovering flows in your application.`,
+              }],
+            };
+          }
+
+          let output = `## Discovered User Flows\n\n`;
+          output += `**Total Flows:** ${result.total_flows}\n`;
+          if (result.session_id) {
+            output += `**Session:** \`${result.session_id}\`\n`;
+          }
+          output += `\n`;
+
+          result.flows.forEach((flow, index) => {
+            const confidenceEmoji = flow.confidence > 0.8 ? "🟢" : flow.confidence > 0.5 ? "🟡" : "🟠";
+
+            output += `### ${index + 1}. ${flow.name}\n\n`;
+            output += `**ID:** \`${flow.id}\`\n`;
+            output += `**Description:** ${flow.description}\n`;
+            output += `**Confidence:** ${confidenceEmoji} ${(flow.confidence * 100).toFixed(0)}%\n`;
+            output += `**Entry Point:** ${flow.entry_point}\n`;
+            if (flow.exit_point) {
+              output += `**Exit Point:** ${flow.exit_point}\n`;
+            }
+            if (flow.user_journey_type) {
+              output += `**Journey Type:** ${flow.user_journey_type}\n`;
+            }
+            output += `\n`;
+
+            output += `**Steps (${flow.steps.length}):**\n`;
+            flow.steps.slice(0, 5).forEach((step, stepIndex) => {
+              output += `  ${stepIndex + 1}. ${step.action}`;
+              if (step.target) output += ` on "${step.target}"`;
+              if (step.value) output += ` with "${step.value}"`;
+              output += `\n`;
+            });
+            if (flow.steps.length > 5) {
+              output += `  ... and ${flow.steps.length - 5} more steps\n`;
+            }
+            output += `\n`;
+          });
+
+          output += `---\n\n`;
+          output += `**Tip:** Use \`argus_discovery_generate\` with a flow_id to generate a test from any discovered flow.\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_discovery_generate - Generate tests from discovered flows
+    this.server.tool(
+      "argus_discovery_generate",
+      "Generate an automated test from a discovered user flow. The AI will create test steps and assertions based on the flow's actions and expected outcomes.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        flow_id: z.string().describe("The ID of the discovered flow to generate a test from"),
+        test_name: z.string().optional().describe("Custom name for the generated test (optional, AI will suggest one if not provided)"),
+      },
+      async ({ project_id, flow_id, test_name }) => {
+        try {
+          await this.requireAuth();
+
+          const body: Record<string, unknown> = {
+            project_id,
+            flow_id,
+          };
+          if (test_name) {
+            body.test_name = test_name;
+          }
+
+          const result = await this.callBrainAPIWithAuth<DiscoveryGenerateResponse>(
+            "/api/v1/discovery/generate-test",
+            "POST",
+            body
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Test Generation Failed\n\n${result.error || "Failed to generate test from the discovered flow."}`,
+              }],
+              isError: true,
+            };
+          }
+
+          const confidenceEmoji = result.confidence > 0.8 ? "🟢" : result.confidence > 0.5 ? "🟡" : "🟠";
+
+          let output = `## Test Generated Successfully\n\n`;
+          output += `**Test ID:** \`${result.test.id}\`\n`;
+          output += `**Name:** ${result.test.name}\n`;
+          output += `**From Flow:** \`${result.flow_id}\`\n`;
+          output += `**Confidence:** ${confidenceEmoji} ${(result.confidence * 100).toFixed(0)}%\n\n`;
+
+          output += `### Description\n\n${result.test.description}\n\n`;
+
+          output += `### Test Steps (${result.test.steps.length})\n\n`;
+          result.test.steps.forEach((step, index) => {
+            output += `${index + 1}. **${step.action}**`;
+            if (step.target) output += ` on \`${step.target}\``;
+            if (step.value) output += ` with value "${step.value}"`;
+            output += `\n`;
+          });
+
+          output += `\n### Assertions (${result.test.assertions.length})\n\n`;
+          result.test.assertions.forEach((assertion, index) => {
+            output += `${index + 1}. ${assertion.type}`;
+            if (assertion.target) output += `: \`${assertion.target}\``;
+            if (assertion.expected) output += ` = "${assertion.expected}"`;
+            output += `\n`;
+          });
+
+          output += `\n---\n\n`;
+          output += `**Next Steps:**\n`;
+          output += `- Use \`argus_test\` to run this test\n`;
+          output += `- Use \`argus_test_review\` to review and approve the test\n`;
+          output += `- Use \`argus_export\` to export to your preferred test framework\n`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_discovery_compare - Compare discovery sessions
+    this.server.tool(
+      "argus_discovery_compare",
+      "Compare two discovery sessions to find new, removed, or changed user flows. Useful for detecting UI changes, new features, or regression risks between app versions.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        session_id_1: z.string().describe("The first (older/baseline) discovery session ID"),
+        session_id_2: z.string().describe("The second (newer/current) discovery session ID"),
+      },
+      async ({ project_id, session_id_1, session_id_2 }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<DiscoveryCompareResponse>(
+            `/api/v1/discovery/compare?project_id=${project_id}&session_id_1=${session_id_1}&session_id_2=${session_id_2}`,
+            "GET"
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Comparison Failed\n\n${result.error || "Failed to compare discovery sessions."}`,
+              }],
+              isError: true,
+            };
+          }
+
+          const { comparison } = result;
+
+          let output = `## Discovery Session Comparison\n\n`;
+
+          output += `### Sessions\n\n`;
+          output += `| Property | Session 1 (Baseline) | Session 2 (Current) |\n`;
+          output += `|----------|---------------------|--------------------|\n`;
+          output += `| Session ID | \`${comparison.session_1.session_id}\` | \`${comparison.session_2.session_id}\` |\n`;
+          output += `| Pages | ${comparison.session_1.pages_count} | ${comparison.session_2.pages_count} |\n`;
+          output += `| Flows | ${comparison.session_1.flows_count} | ${comparison.session_2.flows_count} |\n`;
+          output += `| Timestamp | ${comparison.session_1.timestamp} | ${comparison.session_2.timestamp} |\n\n`;
+
+          // New flows
+          if (comparison.new_flows.length > 0) {
+            output += `### New Flows (${comparison.new_flows.length})\n\n`;
+            comparison.new_flows.forEach((flowId, index) => {
+              output += `${index + 1}. \`${flowId}\`\n`;
+            });
+            output += `\n`;
+          }
+
+          // Removed flows
+          if (comparison.removed_flows.length > 0) {
+            output += `### Removed Flows (${comparison.removed_flows.length})\n\n`;
+            comparison.removed_flows.forEach((flowId, index) => {
+              output += `${index + 1}. \`${flowId}\`\n`;
+            });
+            output += `\n`;
+          }
+
+          // Changed flows
+          if (comparison.changed_flows.length > 0) {
+            output += `### Changed Flows (${comparison.changed_flows.length})\n\n`;
+            comparison.changed_flows.forEach((changed, index) => {
+              output += `${index + 1}. **\`${changed.flow_id}\`**\n`;
+              changed.changes.forEach(change => {
+                output += `   - ${change}\n`;
+              });
+            });
+            output += `\n`;
+          }
+
+          // Summary
+          output += `### Summary\n\n${comparison.summary}\n\n`;
+
+          // Recommendations
+          const hasChanges = comparison.new_flows.length > 0 || comparison.removed_flows.length > 0 || comparison.changed_flows.length > 0;
+
+          if (hasChanges) {
+            output += `### Recommendations\n\n`;
+            if (comparison.new_flows.length > 0) {
+              output += `- **Generate tests** for ${comparison.new_flows.length} new flow(s) using \`argus_discovery_generate\`\n`;
+            }
+            if (comparison.removed_flows.length > 0) {
+              output += `- **Review removed flows** - these may indicate deprecated features or broken navigation\n`;
+            }
+            if (comparison.changed_flows.length > 0) {
+              output += `- **Update existing tests** for ${comparison.changed_flows.length} changed flow(s) to prevent test failures\n`;
+            }
+          } else {
+            output += `No significant changes detected between sessions.\n`;
+          }
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // =========================================================================
+    // TIME TRAVEL DEBUGGING TOOLS - Execution history and replay
+    // =========================================================================
+
+    // Tool: argus_time_travel_checkpoints - List state checkpoints for a test run
+    this.server.tool(
+      "argus_time_travel_checkpoints",
+      "List all state checkpoints for a test run. Use this to browse historical execution states and find points to replay or fork from.",
+      {
+        project_id: z.string().describe("The project UUID to list checkpoints for"),
+        thread_id: z.string().optional().describe("Optional thread ID to filter checkpoints for a specific execution"),
+        limit: z.number().optional().describe("Maximum number of checkpoints to return (default: 20)"),
+      },
+      async ({ project_id, thread_id, limit = 20 }) => {
+        try {
+          await this.requireAuth();
+
+          let url = `/api/v1/time-travel/checkpoints?project_id=${project_id}&limit=${limit}`;
+          if (thread_id) {
+            url += `&thread_id=${thread_id}`;
+          }
+
+          const result = await this.callBrainAPIWithAuth<TimeTravelCheckpointsResponse>(
+            url,
+            "GET"
+          );
+
+          if (!result.checkpoints || result.checkpoints.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Time Travel Checkpoints\n\nNo checkpoints found for project \`${project_id}\`${thread_id ? ` and thread \`${thread_id}\`` : ""}.\n\n**Tip:** Checkpoints are created automatically during test execution. Run some tests first to create execution history.`,
+              }],
+            };
+          }
+
+          const checkpointsList = result.checkpoints.map((cp, i) => {
+            const summary = cp.state_summary;
+            const summaryText = summary
+              ? `Tests: ${summary.test_count ?? "N/A"}, Failures: ${summary.failures_count ?? 0}${summary.current_step ? `, Step: ${summary.current_step}` : ""}`
+              : "No state summary";
+            return `${i + 1}. **${cp.node_name}** (${new Date(cp.created_at).toLocaleString()})\n   ID: \`${cp.checkpoint_id}\`\n   Thread: \`${cp.thread_id}\`\n   ${summaryText}`;
+          }).join("\n\n");
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `## Time Travel Checkpoints\n\n**Project:** \`${project_id}\`\n**Total:** ${result.total} checkpoints\n\n${checkpointsList}\n\n---\n**Actions:**\n- Use \`argus_time_travel_history\` to see detailed state changes\n- Use \`argus_time_travel_replay\` to replay from a checkpoint\n- Use \`argus_time_travel_fork\` to create a branch for A/B testing`,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_time_travel_history - View state change history for a thread
+    this.server.tool(
+      "argus_time_travel_history",
+      "View the complete state change history for a specific execution thread. Shows transitions between nodes and what changed at each step.",
+      {
+        thread_id: z.string().describe("The thread ID to view history for"),
+        include_state: z.boolean().optional().describe("Include full state snapshots at each checkpoint (default: false)"),
+      },
+      async ({ thread_id, include_state = false }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<TimeTravelHistoryResponse>(
+            `/api/v1/time-travel/history/${thread_id}?include_state=${include_state}`,
+            "GET"
+          );
+
+          if (!result.history || result.history.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Execution History\n\nNo history found for thread \`${thread_id}\`.\n\n**Tip:** Make sure the thread ID is correct and the execution has completed.`,
+              }],
+            };
+          }
+
+          const historyList = result.history.map((entry, i) => {
+            const transitionText = entry.transition_from
+              ? `${entry.transition_from} -> ${entry.node_name}`
+              : `START -> ${entry.node_name}`;
+
+            let changesText = "";
+            if (entry.changes && entry.changes.length > 0) {
+              changesText = "\n   Changes:\n" + entry.changes.slice(0, 5).map(c =>
+                `   - \`${c.field}\`: ${JSON.stringify(c.old_value)} -> ${JSON.stringify(c.new_value)}`
+              ).join("\n");
+              if (entry.changes.length > 5) {
+                changesText += `\n   ... and ${entry.changes.length - 5} more changes`;
+              }
+            }
+
+            let stateText = "";
+            if (include_state && entry.state) {
+              const statePreview = JSON.stringify(entry.state, null, 2).slice(0, 500);
+              stateText = `\n   State (preview):\n   \`\`\`json\n   ${statePreview}${statePreview.length >= 500 ? "..." : ""}\n   \`\`\``;
+            }
+
+            return `### ${i + 1}. ${transitionText}\n**Time:** ${new Date(entry.created_at).toLocaleString()}\n**Checkpoint:** \`${entry.checkpoint_id}\`${changesText}${stateText}`;
+          }).join("\n\n");
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `## Execution History for Thread \`${thread_id}\`\n\n**Total Entries:** ${result.total_entries}\n\n${historyList}\n\n---\n**Tip:** Use \`argus_time_travel_replay\` with a checkpoint_id to replay from any point.`,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_time_travel_replay - Replay execution from a checkpoint
+    this.server.tool(
+      "argus_time_travel_replay",
+      "Replay test execution from a specific checkpoint. Creates a new execution thread starting from the saved state. Optionally modify state before replay.",
+      {
+        checkpoint_id: z.string().describe("The checkpoint ID to replay from"),
+        modifications: z.object({}).passthrough().optional().describe("Optional state modifications to apply before replay (e.g., change test inputs)"),
+      },
+      async ({ checkpoint_id, modifications }) => {
+        try {
+          await this.requireAuth();
+
+          const body: Record<string, unknown> = { checkpoint_id };
+          if (modifications) {
+            body.modifications = modifications;
+          }
+
+          const result = await this.callBrainAPIWithAuth<TimeTravelReplayResponse>(
+            "/api/v1/time-travel/replay",
+            "POST",
+            body
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Replay Failed\n\n**Error:** ${result.message || "Unknown error"}\n\n**Checkpoint:** \`${checkpoint_id}\`\n\n**Tip:** Make sure the checkpoint exists and the state is valid for replay.`,
+              }],
+              isError: true,
+            };
+          }
+
+          const modText = modifications
+            ? `\n**Modifications Applied:**\n\`\`\`json\n${JSON.stringify(modifications, null, 2)}\n\`\`\``
+            : "";
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `## Replay Started Successfully\n\n**New Thread ID:** \`${result.new_thread_id}\`\n**From Checkpoint:** \`${result.checkpoint_id}\`\n**Status:** ${result.status}${modText}\n\n---\n**Next Steps:**\n- Use \`argus_time_travel_checkpoints\` to monitor the new execution\n- Use \`argus_time_travel_compare\` to compare with the original execution`,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_time_travel_fork - Fork execution for A/B testing
+    this.server.tool(
+      "argus_time_travel_fork",
+      "Fork an execution from a checkpoint to create a branch for A/B testing. The forked execution can be modified independently to test different scenarios.",
+      {
+        checkpoint_id: z.string().describe("The checkpoint ID to fork from"),
+        branch_name: z.string().optional().describe("Optional name for the forked branch (e.g., 'experiment-new-selector')"),
+      },
+      async ({ checkpoint_id, branch_name }) => {
+        try {
+          await this.requireAuth();
+
+          const body: Record<string, unknown> = { checkpoint_id };
+          if (branch_name) {
+            body.branch_name = branch_name;
+          }
+
+          const result = await this.callBrainAPIWithAuth<TimeTravelForkResponse>(
+            "/api/v1/time-travel/fork",
+            "POST",
+            body
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Fork Failed\n\n**Error:** ${result.message || "Unknown error"}\n\n**Checkpoint:** \`${checkpoint_id}\``,
+              }],
+              isError: true,
+            };
+          }
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `## Fork Created Successfully\n\n**Forked Thread ID:** \`${result.forked_thread_id}\`\n**Branch Name:** ${result.branch_name || "(default)"}\n**From Checkpoint:** \`${result.checkpoint_id}\`\n\n---\n**A/B Testing Tips:**\n- Run different test variations on the forked thread\n- Use \`argus_time_travel_compare\` to compare results\n- Use \`argus_time_travel_replay\` with modifications to test different inputs`,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_time_travel_compare - Compare divergent execution paths
+    this.server.tool(
+      "argus_time_travel_compare",
+      "Compare two execution threads to see where they diverged and what differences exist. Useful for A/B testing analysis and debugging.",
+      {
+        thread_id_1: z.string().describe("First thread ID to compare"),
+        thread_id_2: z.string().describe("Second thread ID to compare"),
+      },
+      async ({ thread_id_1, thread_id_2 }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<TimeTravelCompareResponse>(
+            `/api/v1/time-travel/compare/${thread_id_1}/${thread_id_2}`,
+            "GET"
+          );
+
+          let divergenceText = "No common divergence point found (threads may be unrelated).";
+          if (result.divergence_point) {
+            divergenceText = `**Divergence Point:**\n- Checkpoint: \`${result.divergence_point.checkpoint_id}\`\n- Node: ${result.divergence_point.node_name}\n- Time: ${new Date(result.divergence_point.timestamp).toLocaleString()}`;
+          }
+
+          let differencesText = "No differences found.";
+          if (result.differences && result.differences.length > 0) {
+            differencesText = result.differences.slice(0, 10).map((diff, i) => {
+              return `${i + 1}. **${diff.field}**\n   Thread 1: \`${JSON.stringify(diff.thread_1_value)}\`\n   Thread 2: \`${JSON.stringify(diff.thread_2_value)}\`\n   First diverged: ${new Date(diff.first_diverged_at).toLocaleString()}`;
+            }).join("\n\n");
+
+            if (result.differences.length > 10) {
+              differencesText += `\n\n... and ${result.differences.length - 10} more differences`;
+            }
+          }
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `## Execution Comparison\n\n**Thread 1:** \`${result.thread_id_1}\` (${result.summary.thread_1_steps} steps)\n**Thread 2:** \`${result.thread_id_2}\` (${result.summary.thread_2_steps} steps)\n\n${divergenceText}\n\n### Differences (${result.summary.total_differences} total)\n\n${differencesText}\n\n---\n**Tip:** Use \`argus_time_travel_history\` on each thread to see detailed state changes.`,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // =====================================================
+    // SCHEDULING & AUTOMATION TOOLS (RAP-280)
+    // =====================================================
+
+    // Tool: argus_schedule_create - Create a test schedule
+    this.server.tool(
+      "argus_schedule_create",
+      "Create a scheduled test run. Define when tests should run automatically using cron expressions (e.g., '0 9 * * *' for daily at 9 AM UTC). Schedules can be enabled/disabled without deletion.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        name: z.string().describe("A descriptive name for the schedule (e.g., 'Nightly Regression Suite')"),
+        cron_expression: z.string().describe("Cron expression for schedule timing (e.g., '0 9 * * *' for daily at 9 AM, '0 */4 * * *' for every 4 hours)"),
+        test_ids: z.array(z.string()).describe("Array of test IDs to run on this schedule"),
+        enabled: z.boolean().optional().default(true).describe("Whether the schedule is active (default: true)"),
+      },
+      async ({ project_id, name, cron_expression, test_ids, enabled }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<ScheduleCreateResponse>(
+            "/api/v1/schedules",
+            "POST",
+            {
+              project_id,
+              name,
+              cron_expression,
+              test_ids,
+              enabled,
+            }
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Schedule Creation Failed\n\n**Error:** ${result.error || "Unknown error"}\n\n**Tips:**\n- Verify cron expression syntax (e.g., \`0 9 * * *\` for daily at 9 AM)\n- Ensure all test IDs exist in the project\n- Check project permissions`,
+              }],
+              isError: true,
+            };
+          }
+
+          const schedule = result.schedule;
+          const statusEmoji = schedule.enabled ? "🟢 Active" : "🔴 Disabled";
+
+          let output = `## Schedule Created Successfully\n\n`;
+          output += `| Field | Value |\n|-------|-------|\n`;
+          output += `| **ID** | \`${schedule.id}\` |\n`;
+          output += `| **Name** | ${schedule.name} |\n`;
+          output += `| **Status** | ${statusEmoji} |\n`;
+          output += `| **Cron Expression** | \`${schedule.cron_expression}\` |\n`;
+          output += `| **Tests** | ${schedule.test_ids.length} test(s) |\n`;
+          if (schedule.next_run_at) {
+            output += `| **Next Run** | ${new Date(schedule.next_run_at).toLocaleString()} |\n`;
+          }
+          output += `| **Created** | ${new Date(schedule.created_at).toLocaleString()} |\n`;
+
+          output += `\n### Test IDs\n\n`;
+          schedule.test_ids.forEach((testId, i) => {
+            output += `${i + 1}. \`${testId}\`\n`;
+          });
+
+          output += `\n---\n**Next Steps:**\n`;
+          output += `- \`argus_schedule_list("${project_id}")\` - View all schedules\n`;
+          output += `- \`argus_schedule_run("${schedule.id}")\` - Trigger manually\n`;
+          output += `- \`argus_schedule_history("${schedule.id}")\` - View run history`;
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: output,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_schedule_list - List schedules for a project
+    this.server.tool(
+      "argus_schedule_list",
+      "List all test schedules for a project. Shows schedule status, timing, and next run information. Filter by enabled/disabled status.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        limit: z.number().optional().default(20).describe("Maximum number of schedules to return (default: 20)"),
+        status: z.enum(["enabled", "disabled"]).optional().describe("Filter by schedule status (enabled/disabled)"),
+      },
+      async ({ project_id, limit, status }) => {
+        try {
+          await this.requireAuth();
+
+          let url = `/api/v1/schedules?project_id=${project_id}&limit=${limit}`;
+          if (status) {
+            url += `&status=${status}`;
+          }
+
+          const result = await this.callBrainAPIWithAuth<ScheduleResponse>(
+            url,
+            "GET"
+          );
+
+          if (!result.schedules || result.schedules.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Schedules for Project\n\nNo schedules found${status ? ` with status "${status}"` : ""}.\n\n**Create a schedule:**\n\`\`\`\nargus_schedule_create(\n  project_id: "${project_id}",\n  name: "Nightly Regression",\n  cron_expression: "0 2 * * *",  // Daily at 2 AM\n  test_ids: ["test-id-1", "test-id-2"]\n)\n\`\`\``,
+              }],
+            };
+          }
+
+          let output = `## Test Schedules\n\n`;
+          output += `**Project:** \`${project_id}\`\n`;
+          output += `**Total:** ${result.schedules.length} schedule(s)\n\n`;
+
+          output += `| Name | Status | Cron | Tests | Next Run | Last Run |\n`;
+          output += `|------|--------|------|-------|----------|----------|\n`;
+
+          result.schedules.forEach((schedule) => {
+            const statusEmoji = schedule.enabled ? "🟢" : "🔴";
+            const nextRun = schedule.next_run_at
+              ? new Date(schedule.next_run_at).toLocaleString()
+              : "N/A";
+            const lastRun = schedule.last_run_at
+              ? new Date(schedule.last_run_at).toLocaleString()
+              : "Never";
+            output += `| ${schedule.name} | ${statusEmoji} | \`${schedule.cron_expression}\` | ${schedule.test_ids.length} | ${nextRun} | ${lastRun} |\n`;
+          });
+
+          output += `\n### Schedule Details\n\n`;
+          result.schedules.forEach((schedule, i) => {
+            const statusText = schedule.enabled ? "Active" : "Disabled";
+            output += `**${i + 1}. ${schedule.name}** (${statusText})\n`;
+            output += `- ID: \`${schedule.id}\`\n`;
+            output += `- Cron: \`${schedule.cron_expression}\`\n`;
+            output += `- Tests: ${schedule.test_ids.length} test(s)\n\n`;
+          });
+
+          output += `---\n**Actions:**\n`;
+          output += `- \`argus_schedule_run("schedule_id")\` - Trigger a schedule manually\n`;
+          output += `- \`argus_schedule_history("schedule_id")\` - View run history\n`;
+          output += `- \`argus_schedule_create(...)\` - Create a new schedule`;
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: output,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_schedule_run - Manually trigger a schedule
+    this.server.tool(
+      "argus_schedule_run",
+      "Manually trigger a test schedule to run immediately, bypassing the cron timing. Useful for testing schedule configuration or running tests on demand.",
+      {
+        schedule_id: z.string().describe("The schedule UUID to trigger"),
+      },
+      async ({ schedule_id }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<ScheduleRunResponse>(
+            `/api/v1/schedules/${schedule_id}/run`,
+            "POST"
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Schedule Trigger Failed\n\n**Schedule ID:** \`${schedule_id}\`\n**Error:** ${result.error || "Unknown error"}\n\n**Possible causes:**\n- Schedule does not exist\n- Schedule is disabled\n- Concurrent run already in progress`,
+              }],
+              isError: true,
+            };
+          }
+
+          const statusEmoji = result.status === "running" ? "🔄" : result.status === "queued" ? "⏳" : "✅";
+
+          let output = `## Schedule Triggered Successfully ${statusEmoji}\n\n`;
+          output += `| Field | Value |\n|-------|-------|\n`;
+          output += `| **Run ID** | \`${result.run_id}\` |\n`;
+          output += `| **Schedule ID** | \`${result.schedule_id}\` |\n`;
+          output += `| **Status** | ${result.status} |\n`;
+          output += `| **Started At** | ${new Date(result.started_at).toLocaleString()} |\n`;
+
+          if (result.message) {
+            output += `\n**Message:** ${result.message}\n`;
+          }
+
+          output += `\n---\n**Monitor progress:**\n`;
+          output += `- \`argus_schedule_history("${schedule_id}")\` - View run results\n`;
+          output += `- Check the Argus dashboard for real-time updates`;
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: output,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_schedule_history - View run history for a schedule
+    this.server.tool(
+      "argus_schedule_history",
+      "View the execution history for a test schedule. Shows past runs with their status, duration, and test results. Useful for monitoring schedule health and identifying flaky tests.",
+      {
+        schedule_id: z.string().describe("The schedule UUID to view history for"),
+        limit: z.number().optional().default(20).describe("Maximum number of runs to return (default: 20)"),
+      },
+      async ({ schedule_id, limit }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<ScheduleHistoryResponse>(
+            `/api/v1/schedules/${schedule_id}/runs?limit=${limit}`,
+            "GET"
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Schedule History Error\n\n**Schedule ID:** \`${schedule_id}\`\n**Error:** Schedule not found or access denied.`,
+              }],
+              isError: true,
+            };
+          }
+
+          if (!result.runs || result.runs.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Schedule Run History\n\n**Schedule ID:** \`${schedule_id}\`\n\nNo runs found for this schedule.\n\n**Trigger a run:**\n\`argus_schedule_run("${schedule_id}")\``,
+              }],
+            };
+          }
+
+          let output = `## Schedule Run History\n\n`;
+          output += `**Schedule ID:** \`${schedule_id}\`\n`;
+          output += `**Total Runs:** ${result.total}\n\n`;
+
+          output += `| Run | Status | Started | Duration | Tests | Passed | Failed |\n`;
+          output += `|-----|--------|---------|----------|-------|--------|--------|\n`;
+
+          result.runs.forEach((run, i) => {
+            const statusEmoji = run.status === "completed" && run.tests_failed === 0 ? "✅" :
+                               run.status === "completed" && run.tests_failed > 0 ? "⚠️" :
+                               run.status === "running" ? "🔄" :
+                               run.status === "failed" ? "❌" : "⏳";
+            const duration = run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : "-";
+            const started = new Date(run.started_at).toLocaleString();
+            output += `| ${i + 1} | ${statusEmoji} ${run.status} | ${started} | ${duration} | ${run.tests_run} | ${run.tests_passed} | ${run.tests_failed} |\n`;
+          });
+
+          // Calculate summary stats
+          const completedRuns = result.runs.filter(r => r.status === "completed");
+          const successfulRuns = completedRuns.filter(r => r.tests_failed === 0).length;
+          const successRate = completedRuns.length > 0
+            ? ((successfulRuns / completedRuns.length) * 100).toFixed(1)
+            : "N/A";
+          const avgDuration = completedRuns.length > 0 && completedRuns[0].duration_ms
+            ? (completedRuns.reduce((sum, r) => sum + (r.duration_ms || 0), 0) / completedRuns.length / 1000).toFixed(1)
+            : "N/A";
+
+          output += `\n### Summary\n\n`;
+          output += `- **Success Rate:** ${successRate}%\n`;
+          output += `- **Avg Duration:** ${avgDuration}s\n`;
+          output += `- **Completed Runs:** ${completedRuns.length}\n`;
+
+          // Show any errors from recent failed runs
+          const failedRuns = result.runs.filter(r => r.status === "failed" || r.tests_failed > 0);
+          if (failedRuns.length > 0) {
+            output += `\n### Recent Issues\n\n`;
+            failedRuns.slice(0, 3).forEach((run) => {
+              const runDate = new Date(run.started_at).toLocaleDateString();
+              if (run.error) {
+                output += `- **${runDate}:** ${run.error}\n`;
+              } else if (run.tests_failed > 0) {
+                output += `- **${runDate}:** ${run.tests_failed} test(s) failed\n`;
+              }
+            });
+          }
+
+          output += `\n---\n**Actions:**\n`;
+          output += `- \`argus_schedule_run("${schedule_id}")\` - Trigger a new run\n`;
+          output += `- \`argus_schedule_list("project_id")\` - View all schedules`;
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: output,
+            }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+
+    // =====================================================
+    // VISUAL AI TESTING TOOLS (RAP-279)
+    // =====================================================
+
+    // Tool: argus_visual_capture - Capture screenshot with metadata
+    this.server.tool(
+      "argus_visual_capture",
+      "Capture a screenshot of a web page with metadata. Useful for visual regression testing, creating baselines, and documenting UI states.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        url: z.string().url().describe("URL of the page to capture"),
+        viewport: z.object({
+          width: z.number().min(320).max(3840).optional().default(1920).describe("Viewport width in pixels (default: 1920)"),
+          height: z.number().min(240).max(2160).optional().default(1080).describe("Viewport height in pixels (default: 1080)"),
+        }).optional().describe("Viewport dimensions for the screenshot"),
+        fullpage: z.boolean().optional().default(false).describe("Capture full page including scrollable content (default: false)"),
+      },
+      async ({ project_id, url, viewport, fullpage }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<VisualCaptureResponse>(
+            "/api/v1/visual/capture",
+            "POST",
+            {
+              project_id,
+              url,
+              viewport: viewport || { width: 1920, height: 1080 },
+              fullpage: fullpage || false,
+            }
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Screenshot Capture Failed\n\n**Error:** ${result.error || "Unknown error"}\n**URL:** ${url}`,
+              }],
+              isError: true,
+            };
+          }
+
+          let output = `## Screenshot Captured\n\n`;
+          output += `**Screenshot ID:** \`${result.screenshot_id}\`\n`;
+          output += `**URL:** ${result.url}\n`;
+          output += `**Viewport:** ${result.viewport.width}x${result.viewport.height}\n`;
+          output += `**Captured At:** ${new Date(result.captured_at).toLocaleString()}\n\n`;
+
+          if (result.metadata) {
+            output += `### Page Metadata\n\n`;
+            if (result.metadata.title) output += `- **Title:** ${result.metadata.title}\n`;
+            if (result.metadata.load_time_ms) output += `- **Load Time:** ${result.metadata.load_time_ms}ms\n`;
+            if (result.metadata.dom_elements) output += `- **DOM Elements:** ${result.metadata.dom_elements}\n`;
+            output += `\n`;
+          }
+
+          output += `### Screenshot URL\n\n`;
+          output += `![Screenshot](${result.screenshot_url})\n\n`;
+          output += `**Direct Link:** [View Screenshot](${result.screenshot_url})\n\n`;
+
+          output += `---\n**Next Steps:**\n`;
+          output += `- Use \`argus_visual_baseline\` to set this as a baseline\n`;
+          output += `- Use \`argus_visual_analyze\` for AI-powered visual analysis\n`;
+          output += `- Use \`argus_visual_compare\` to diff against another screenshot`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_visual_compare - AI-powered visual diff
+    this.server.tool(
+      "argus_visual_compare",
+      "AI-powered visual comparison between screenshots. Detects visual differences, categorizes changes by severity, and provides intelligent analysis of what changed.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        baseline_id: z.string().optional().describe("Baseline screenshot ID (use this OR baseline_url)"),
+        screenshot_id: z.string().optional().describe("Screenshot ID to compare (use this OR compare_url)"),
+        baseline_url: z.string().url().optional().describe("URL to capture as baseline (use if baseline_id not provided)"),
+        compare_url: z.string().url().optional().describe("URL to capture for comparison (use if screenshot_id not provided)"),
+      },
+      async ({ project_id, baseline_id, screenshot_id, baseline_url, compare_url }) => {
+        try {
+          await this.requireAuth();
+
+          // Validate input - need either IDs or URLs
+          if (!baseline_id && !baseline_url) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Input Error\n\nPlease provide either \`baseline_id\` or \`baseline_url\` for the baseline screenshot.`,
+              }],
+              isError: true,
+            };
+          }
+
+          if (!screenshot_id && !compare_url) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Input Error\n\nPlease provide either \`screenshot_id\` or \`compare_url\` for the comparison screenshot.`,
+              }],
+              isError: true,
+            };
+          }
+
+          const body: Record<string, unknown> = { project_id };
+          if (baseline_id) body.baseline_id = baseline_id;
+          if (screenshot_id) body.screenshot_id = screenshot_id;
+          if (baseline_url) body.baseline_url = baseline_url;
+          if (compare_url) body.compare_url = compare_url;
+
+          const result = await this.callBrainAPIWithAuth<VisualCompareResponse>(
+            "/api/v1/visual/compare",
+            "POST",
+            body
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Visual Comparison Failed\n\n**Error:** ${result.error || "Unknown error"}`,
+              }],
+              isError: true,
+            };
+          }
+
+          const matchEmoji = result.is_match ? "✅" : "❌";
+          const matchPercentEmoji = result.match_percentage > 95 ? "🟢" : result.match_percentage > 80 ? "🟡" : "🔴";
+
+          let output = `## Visual Comparison Results ${matchEmoji}\n\n`;
+          output += `**Comparison ID:** \`${result.comparison_id}\`\n`;
+          output += `**Match:** ${matchPercentEmoji} ${result.match_percentage.toFixed(1)}%\n`;
+          output += `**Status:** ${result.is_match ? "Screenshots match" : "Differences detected"}\n`;
+          output += `**Analysis Time:** ${result.comparison_time_ms}ms\n\n`;
+
+          if (result.differences && result.differences.length > 0) {
+            output += `### Differences Detected (${result.differences.length})\n\n`;
+            output += `| Region | Type | Severity | Description |\n|--------|------|----------|-------------|\n`;
+
+            result.differences.slice(0, 10).forEach((diff) => {
+              const severityEmoji = diff.severity === "high" ? "🔴" : diff.severity === "medium" ? "🟡" : "🟢";
+              const regionStr = `(${diff.region.x}, ${diff.region.y}) ${diff.region.width}x${diff.region.height}`;
+              output += `| ${regionStr} | ${diff.type} | ${severityEmoji} ${diff.severity} | ${diff.description} |\n`;
+            });
+
+            if (result.differences.length > 10) {
+              output += `\n_...and ${result.differences.length - 10} more differences_\n`;
+            }
+            output += `\n`;
+          }
+
+          if (result.ai_analysis) {
+            output += `### AI Analysis\n\n`;
+            output += `**Summary:** ${result.ai_analysis.summary}\n\n`;
+
+            if (result.ai_analysis.visual_changes && result.ai_analysis.visual_changes.length > 0) {
+              output += `**Visual Changes:**\n`;
+              result.ai_analysis.visual_changes.forEach((change) => {
+                output += `- ${change}\n`;
+              });
+              output += `\n`;
+            }
+
+            output += `**Impact Assessment:** ${result.ai_analysis.impact_assessment}\n\n`;
+            output += `**Recommendation:** ${result.ai_analysis.recommendation}\n\n`;
+          }
+
+          if (result.diff_image_url) {
+            output += `### Diff Image\n\n`;
+            output += `![Visual Diff](${result.diff_image_url})\n\n`;
+            output += `**Direct Link:** [View Diff Image](${result.diff_image_url})\n\n`;
+          }
+
+          output += `---\n**IDs for Reference:**\n`;
+          output += `- Baseline: \`${result.baseline_id}\`\n`;
+          output += `- Screenshot: \`${result.screenshot_id}\``;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_visual_baseline - Set a visual baseline
+    this.server.tool(
+      "argus_visual_baseline",
+      "Set a screenshot as a visual baseline for future comparisons. Baselines are named reference screenshots that new screenshots can be compared against.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        screenshot_id: z.string().describe("Screenshot ID to set as baseline"),
+        name: z.string().describe("Name for the baseline (e.g., 'Homepage Desktop', 'Checkout Flow Step 2')"),
+        description: z.string().optional().describe("Optional description of what this baseline represents"),
+      },
+      async ({ project_id, screenshot_id, name, description }) => {
+        try {
+          await this.requireAuth();
+
+          const body: Record<string, unknown> = {
+            project_id,
+            screenshot_id,
+            name,
+          };
+          if (description) body.description = description;
+
+          const result = await this.callBrainAPIWithAuth<VisualBaselineResponse>(
+            "/api/v1/visual/baseline",
+            "POST",
+            body
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Baseline Creation Failed\n\n**Error:** ${result.error || "Unknown error"}\n**Screenshot ID:** \`${screenshot_id}\``,
+              }],
+              isError: true,
+            };
+          }
+
+          let output = `## Baseline Created\n\n`;
+          output += `**Baseline ID:** \`${result.baseline_id}\`\n`;
+          output += `**Name:** ${result.name}\n`;
+          if (result.description) output += `**Description:** ${result.description}\n`;
+          output += `**Screenshot ID:** \`${result.screenshot_id}\`\n`;
+          output += `**Created At:** ${new Date(result.created_at).toLocaleString()}\n\n`;
+
+          output += `### Baseline Screenshot\n\n`;
+          output += `![Baseline](${result.screenshot_url})\n\n`;
+          output += `**Direct Link:** [View Baseline](${result.screenshot_url})\n\n`;
+
+          output += `---\n**Usage:**\n`;
+          output += `\`\`\`\n`;
+          output += `argus_visual_compare(\n`;
+          output += `  project_id: "${project_id}",\n`;
+          output += `  baseline_id: "${result.baseline_id}",\n`;
+          output += `  compare_url: "https://your-site.com/page-to-test"\n`;
+          output += `)\n`;
+          output += `\`\`\``;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_visual_baselines - List visual baselines
+    this.server.tool(
+      "argus_visual_baselines",
+      "List all visual baselines for a project. Shows baseline names, screenshots, and comparison counts.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        limit: z.number().optional().default(20).describe("Maximum number of baselines to return (default: 20)"),
+      },
+      async ({ project_id, limit }) => {
+        try {
+          await this.requireAuth();
+
+          const params = new URLSearchParams({
+            project_id,
+            limit: String(limit || 20),
+          });
+
+          const result = await this.callBrainAPIWithAuth<VisualBaselinesResponse>(
+            `/api/v1/visual/baselines?${params}`,
+            "GET"
+          );
+
+          if (!result.baselines || result.baselines.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## No Visual Baselines Found\n\nNo baselines exist for this project yet.\n\n**To create a baseline:**\n1. Use \`argus_visual_capture\` to capture a screenshot\n2. Use \`argus_visual_baseline\` to set it as a baseline`,
+              }],
+            };
+          }
+
+          let output = `## Visual Baselines\n\n`;
+          output += `**Project:** \`${result.project_id}\`\n`;
+          output += `**Total Baselines:** ${result.total}\n\n`;
+
+          output += `| Name | URL | Viewport | Created | Comparisons |\n|------|-----|----------|---------|-------------|\n`;
+
+          result.baselines.forEach((baseline) => {
+            const createdDate = new Date(baseline.created_at).toLocaleDateString();
+            const viewport = `${baseline.viewport.width}x${baseline.viewport.height}`;
+            const urlShort = baseline.url.length > 40 ? baseline.url.substring(0, 37) + "..." : baseline.url;
+            output += `| [${baseline.name}](${baseline.screenshot_url}) | ${urlShort} | ${viewport} | ${createdDate} | ${baseline.comparison_count} |\n`;
+          });
+
+          output += `\n### Baseline Details\n\n`;
+
+          result.baselines.slice(0, 5).forEach((baseline, i) => {
+            output += `**${i + 1}. ${baseline.name}**\n`;
+            output += `- ID: \`${baseline.id}\`\n`;
+            output += `- URL: ${baseline.url}\n`;
+            if (baseline.description) output += `- Description: ${baseline.description}\n`;
+            output += `- Viewport: ${baseline.viewport.width}x${baseline.viewport.height}\n`;
+            output += `- Comparisons: ${baseline.comparison_count}\n\n`;
+          });
+
+          if (result.baselines.length > 5) {
+            output += `_...and ${result.baselines.length - 5} more baselines_\n\n`;
+          }
+
+          output += `---\n**Actions:**\n`;
+          output += `- Use \`argus_visual_compare\` with a baseline_id to compare against new screenshots\n`;
+          output += `- Use \`argus_visual_capture\` to capture new screenshots for comparison`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
+
+    // Tool: argus_visual_analyze - Analyze visual changes with WCAG accessibility
+    this.server.tool(
+      "argus_visual_analyze",
+      "AI-powered visual analysis of a screenshot. Identifies UI elements, assesses layout structure, and optionally performs WCAG accessibility compliance checks.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        screenshot_id: z.string().describe("Screenshot ID to analyze"),
+        include_wcag: z.boolean().optional().default(true).describe("Include WCAG accessibility compliance check (default: true)"),
+      },
+      async ({ project_id, screenshot_id, include_wcag }) => {
+        try {
+          await this.requireAuth();
+
+          const result = await this.callBrainAPIWithAuth<VisualAnalyzeResponse>(
+            "/api/v1/visual/analyze",
+            "POST",
+            {
+              project_id,
+              screenshot_id,
+              include_wcag: include_wcag !== false,
+            }
+          );
+
+          if (!result.success) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `## Visual Analysis Failed\n\n**Error:** ${result.error || "Unknown error"}\n**Screenshot ID:** \`${screenshot_id}\``,
+              }],
+              isError: true,
+            };
+          }
+
+          let output = `## Visual Analysis Results\n\n`;
+          output += `**Screenshot ID:** \`${result.screenshot_id}\`\n`;
+          output += `**Analysis Time:** ${result.analysis_time_ms}ms\n\n`;
+
+          // Visual Elements
+          if (result.analysis.visual_elements && result.analysis.visual_elements.length > 0) {
+            output += `### Visual Elements Detected (${result.analysis.visual_elements.length})\n\n`;
+            output += `| Type | Description | Confidence |\n|------|-------------|------------|\n`;
+
+            result.analysis.visual_elements.slice(0, 15).forEach((element) => {
+              const confEmoji = element.confidence > 0.9 ? "🟢" : element.confidence > 0.7 ? "🟡" : "🔴";
+              output += `| ${element.type} | ${element.description} | ${confEmoji} ${(element.confidence * 100).toFixed(0)}% |\n`;
+            });
+
+            if (result.analysis.visual_elements.length > 15) {
+              output += `\n_...and ${result.analysis.visual_elements.length - 15} more elements_\n`;
+            }
+            output += `\n`;
+          }
+
+          // Layout Assessment
+          if (result.analysis.layout_assessment) {
+            output += `### Layout Assessment\n\n`;
+            output += `- **Structure:** ${result.analysis.layout_assessment.structure}\n`;
+            output += `- **Responsiveness:** ${result.analysis.layout_assessment.responsiveness}\n`;
+            output += `- **Visual Hierarchy:** ${result.analysis.layout_assessment.visual_hierarchy}\n\n`;
+          }
+
+          // Color Analysis
+          if (result.analysis.color_analysis) {
+            output += `### Color Analysis\n\n`;
+            output += `- **Color Scheme:** ${result.analysis.color_analysis.color_scheme}\n`;
+            if (result.analysis.color_analysis.dominant_colors && result.analysis.color_analysis.dominant_colors.length > 0) {
+              output += `- **Dominant Colors:** ${result.analysis.color_analysis.dominant_colors.join(", ")}\n`;
+            }
+            if (result.analysis.color_analysis.contrast_ratio) {
+              const contrastOk = result.analysis.color_analysis.contrast_ratio >= 4.5;
+              output += `- **Contrast Ratio:** ${result.analysis.color_analysis.contrast_ratio.toFixed(1)}:1 ${contrastOk ? "pass" : "warning"}\n`;
+            }
+            output += `\n`;
+          }
+
+          // WCAG Compliance
+          if (result.wcag_compliance) {
+            const wcag = result.wcag_compliance;
+            const levelEmoji = wcag.level === "AAA" ? "gold" : wcag.level === "AA" ? "silver" : "bronze";
+            const scoreEmoji = wcag.score > 80 ? "🟢" : wcag.score > 60 ? "🟡" : "🔴";
+
+            output += `### WCAG Accessibility Compliance\n\n`;
+            output += `**Level:** ${levelEmoji} ${wcag.level}\n`;
+            output += `**Score:** ${scoreEmoji} ${wcag.score}/100\n\n`;
+
+            output += `| Metric | Count |\n|--------|-------|\n`;
+            output += `| Passed Criteria | ${wcag.passed_criteria} |\n`;
+            output += `| Failed Criteria | ${wcag.failed_criteria} |\n`;
+            output += `| Warnings | ${wcag.warnings} |\n\n`;
+
+            if (wcag.issues && wcag.issues.length > 0) {
+              output += `**Issues Found:**\n\n`;
+
+              wcag.issues.slice(0, 10).forEach((issue, i) => {
+                const sevEmoji = issue.severity === "critical" ? "🔴" : issue.severity === "serious" ? "🟠" : issue.severity === "moderate" ? "🟡" : "🟢";
+                output += `${i + 1}. ${sevEmoji} **${issue.rule}** (${issue.severity})\n`;
+                output += `   - ${issue.description}\n`;
+                if (issue.element) output += `   - Element: \`${issue.element}\`\n`;
+                output += `   - **Fix:** ${issue.recommendation}\n\n`;
+              });
+
+              if (wcag.issues.length > 10) {
+                output += `_...and ${wcag.issues.length - 10} more issues_\n\n`;
+              }
+            }
+          }
+
+          // Recommendations
+          if (result.recommendations && result.recommendations.length > 0) {
+            output += `### Recommendations\n\n`;
+            result.recommendations.forEach((rec, i) => {
+              output += `${i + 1}. ${rec}\n`;
+            });
+            output += `\n`;
+          }
+
+          output += `---\n**Actions:**\n`;
+          output += `- Use \`argus_visual_baseline\` to save this as a baseline\n`;
+          output += `- Use \`argus_visual_compare\` to compare with another screenshot`;
+
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        } catch (error) {
+          return this.handleError(error);
+        }
+      }
+    );
   }
 }
 
@@ -4371,8 +7235,51 @@ export default Sentry.withSentry(
             "argus_presence",
             "argus_comments",
           ],
+          discovery: [
+            "argus_discovery_start",
+            "argus_discovery_flows",
+            "argus_discovery_generate",
+            "argus_discovery_compare",
+          ],
+          time_travel: [
+            "argus_time_travel_checkpoints",
+            "argus_time_travel_history",
+            "argus_time_travel_replay",
+            "argus_time_travel_fork",
+            "argus_time_travel_compare",
+          ],
+          cicd: [
+            "argus_cicd_test_impact",
+            "argus_cicd_deployment_risk",
+            "argus_cicd_builds",
+            "argus_cicd_pipelines",
+          ],
+          correlations: [
+            "argus_correlations_timeline",
+            "argus_correlations_root_cause",
+            "argus_correlations_insights",
+            "argus_correlations_query",
+          ],
+          api_testing: [
+            "argus_api_discover",
+            "argus_api_generate",
+            "argus_api_run",
+          ],
+          scheduling: [
+            "argus_schedule_create",
+            "argus_schedule_list",
+            "argus_schedule_run",
+            "argus_schedule_history",
+          ],
+          visual_ai: [
+            "argus_visual_capture",
+            "argus_visual_compare",
+            "argus_visual_baseline",
+            "argus_visual_baselines",
+            "argus_visual_analyze",
+          ],
         },
-        total_tools: 36,
+        total_tools: 65,
         documentation: "https://github.com/raphaenterprises-ai/argus-e2e-testing-agent",
       });
     }
