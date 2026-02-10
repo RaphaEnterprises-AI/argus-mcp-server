@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.4.0](https://github.com/RaphaEnterprises-AI/argus-mcp-server/compare/argus-mcp-server-v1.3.0...argus-mcp-server-v1.4.0) (2026-02-10)
+
+
+### Features
+
+* **mcp:** add 29 new MCP tools for enhanced IDE integration ([6659517](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/6659517070e6c9e170f55643b59c544fc68aa4b7))
+* **mcp:** add 32 new tools, MCP resources, prompts, and P0 fixes (v1.4.0) ([fdc429b](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/fdc429b65b585a8a83d127009176049ca9ccc5a4))
+* **sentry:** add Sentry error monitoring for Cloudflare Workers ([e8ce6c3](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/e8ce6c395a9d5ad9933b1ec573f0b4472b86c750))
+* **standalone:** add self-hosted Node.js MCP server for air-gap deployments ([248f1a7](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/248f1a70a5a8a7960c91b36c0d76d4ab21b8de76))
+
+
+### Bug Fixes
+
+* **security:** remove default JWT secret and improve error handling ([42d6393](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/42d639333657ce0c099a4386126d3c3dbe7ca863))
+
+
+### Documentation
+
+* update README with all 74 MCP tools ([0bbf6b6](https://github.com/RaphaEnterprises-AI/argus-mcp-server/commit/0bbf6b682e06e0f6bc5ebc7eb78566714dc113fc))
+
 ## [1.3.0](https://github.com/RaphaEnterprises-AI/argus-mcp-server/compare/argus-mcp-server-v1.2.0...argus-mcp-server-v1.3.0) (2026-01-16)
 
 
