@@ -1477,7 +1477,8 @@ async function callBrainAPI<T>(
   method: "GET" | "POST" | "PUT" | "DELETE" = "POST",
   body?: Record<string, unknown>,
   env?: Env,
-  accessToken?: string
+  accessToken?: string,
+  maxRetries: number = 3,
 ): Promise<T> {
   const brainUrl = env?.ARGUS_BRAIN_URL || "https://argus-brain-production.up.railway.app";
 
@@ -1499,14 +1500,30 @@ async function callBrainAPI<T>(
     fetchOptions.body = JSON.stringify(body);
   }
 
-  const response = await fetch(`${brainUrl}${endpoint}`, fetchOptions);
+  // Retry loop with exponential backoff for rate limits
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = await fetch(`${brainUrl}${endpoint}`, fetchOptions);
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Brain API error (${response.status}): ${errorText}`);
+    if (response.status === 429 && attempt < maxRetries) {
+      // Rate limited — respect Retry-After header or use exponential backoff
+      const retryAfter = response.headers.get("Retry-After");
+      const delayMs = retryAfter
+        ? parseInt(retryAfter, 10) * 1000
+        : Math.min(1000 * Math.pow(2, attempt), 16000);
+      console.log(`[Brain API] Rate limited on ${endpoint}, retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(r => setTimeout(r, delayMs));
+      continue;
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Brain API error (${response.status}): ${errorText}`);
+    }
+
+    return response.json() as Promise<T>;
   }
 
-  return response.json() as Promise<T>;
+  throw new Error(`Brain API rate limited after ${maxRetries} retries: ${endpoint}`);
 }
 
 // Helper to register MCP connection with Brain API
@@ -3198,7 +3215,7 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
   const uploadRecording = () => {
     if (events.length > 0) {
       navigator.sendBeacon(
-        "https://argus-brain-production.up.railway.app/api/v1/recording/upload",
+        ${JSON.stringify(`${this.env.ARGUS_BRAIN_URL || "https://argus-brain-production.up.railway.app"}/api/v1/recording/upload`)},
         JSON.stringify({
           project_id: projectId,
           recording: { events, metadata: { url: window.location.href } }
@@ -4235,57 +4252,50 @@ export class ArgusMcpAgentSQLite extends McpAgent<EnvWithKV> {
       }
     );
 
-    // Tool: argus_ask - Conversational AI for testing questions
+    // Tool: argus_ask - Conversational AI for testing questions (routes to backend AI chat)
     this.server.tool(
       "argus_ask",
-      "Ask any question about your tests, errors, or testing strategy. The AI will analyze your data and provide insights.",
+      "Ask any question about your tests, errors, or testing strategy. The AI will analyze your data and provide insights using the full Argus AI backend with multi-provider routing, Cognee semantic search, and conversation memory.",
       {
         question: z.string().describe("Your question about testing"),
         project_id: z.string().optional().describe("Project context (optional)"),
+        thread_id: z.string().optional().describe("Conversation thread ID for multi-turn chat (optional)"),
       },
-      async ({ question, project_id }) => {
+      async ({ question, project_id, thread_id }) => {
         try {
           await this.requireAuth();
-          // Gather context if project is specified
-          let context = "";
+
+          // Build context-enriched message
+          let enrichedQuestion = question;
           if (project_id) {
-            const [statsResult, eventsResult] = await Promise.all([
-              this.callBrainAPIWithAuth<BrainQualityStatsResponse>(
-                `/api/v1/quality/stats?project_id=${project_id}`,
-                "GET"
-              ),
-              this.callBrainAPIWithAuth<ProductionEventsResponse>(
-                `/api/v1/quality/events?project_id=${project_id}&limit=5`,
-                "GET"
-              ),
-            ]);
-
-            context = `
-Project Stats:
-- Total events: ${statsResult.stats.total_events}
-- Coverage rate: ${statsResult.stats.coverage_rate}%
-- Tests generated: ${statsResult.stats.total_generated_tests}
-
-Recent events: ${eventsResult.events?.map(e => e.title).join(", ") || "None"}
-`;
+            enrichedQuestion = `[Project context: ${project_id}] ${question}`;
           }
 
-          // For now, provide helpful responses based on common questions
-          const lowerQuestion = question.toLowerCase();
-          let answer = "";
+          // Route to backend AI chat endpoint
+          const chatResponse = await this.callBrainAPIWithAuth<{
+            message: string;
+            thread_id: string;
+            tool_calls?: Array<{ name: string; args: Record<string, unknown>; result?: string }>;
+          }>(
+            `/api/v1/chat/message`,
+            "POST",
+            {
+              messages: [{ role: "user", content: enrichedQuestion }],
+              thread_id: thread_id || undefined,
+              app_url: project_id ? undefined : undefined,
+            }
+          );
 
-          if (lowerQuestion.includes("start") || lowerQuestion.includes("begin") || lowerQuestion.includes("how to")) {
-            answer = `## Getting Started with Argus\n\n1. **Connect error sources** - Set up webhooks from Sentry, Datadog, etc.\n2. **View events** - Use \`argus_events(project_id)\` to see production errors\n3. **Generate tests** - Use \`argus_test_from_event\` or \`argus_batch_generate\`\n4. **Review & approve** - Use \`argus_tests\` and \`argus_test_review\`\n5. **Export** - Use \`argus_export\` to add tests to your repo`;
-          } else if (lowerQuestion.includes("coverage") || lowerQuestion.includes("gap")) {
-            answer = `## Test Coverage\n\nUse \`argus_coverage_gaps(project_id)\` to find untested areas.\n\n${context ? `Your current coverage: ${context}` : "Specify a project_id for specific coverage data."}`;
-          } else if (lowerQuestion.includes("heal") || lowerQuestion.includes("self-healing") || lowerQuestion.includes("selector")) {
-            answer = `## Self-Healing\n\nArgus automatically learns to fix broken selectors.\n\n- View config: \`argus_healing_config(org_id, "get")\`\n- See patterns: \`argus_healing_patterns(org_id)\`\n- View stats: \`argus_healing_stats(org_id)\``;
-          } else if (lowerQuestion.includes("export") || lowerQuestion.includes("playwright") || lowerQuestion.includes("cypress")) {
-            answer = `## Exporting Tests\n\nExport generated tests to code:\n\n\`\`\`\nargus_export(test_id, "typescript", "playwright")\nargus_export(test_id, "python", "selenium")\n\`\`\`\n\nSupported: Python, TypeScript, Java, C#, Ruby, Go`;
-          } else if (lowerQuestion.includes("risk") || lowerQuestion.includes("priorit")) {
-            answer = `## Risk Prioritization\n\nArgus calculates risk scores based on:\n- Error frequency & severity\n- User impact\n- Test coverage\n- Recency\n\nUse \`argus_risk_scores(project_id)\` to see high-risk areas.\nUse \`argus_what_to_test(project_id)\` for prioritized recommendations.`;
-          } else {
-            answer = `## Argus Help\n\nHere are some things I can help with:\n\n**Production Events:**\n- \`argus_events\` - View errors\n- \`argus_event_triage\` - AI triage\n- \`argus_test_from_event\` - Generate test\n\n**Test Management:**\n- \`argus_tests\` - List tests\n- \`argus_test_review\` - Approve/reject\n- \`argus_export\` - Export to code\n\n**Insights:**\n- \`argus_what_to_test\` - Recommendations\n- \`argus_coverage_gaps\` - Find gaps\n- \`argus_risk_scores\` - Risk analysis\n\n**Self-Healing:**\n- \`argus_healing_config\` - Configuration\n- \`argus_healing_patterns\` - Learned fixes\n- \`argus_healing_stats\` - Statistics`;
+          let answer = chatResponse.message || "No response received.";
+
+          // Append tool call info if AI used tools
+          if (chatResponse.tool_calls && chatResponse.tool_calls.length > 0) {
+            answer += `\n\n---\n*AI used ${chatResponse.tool_calls.length} tool(s): ${chatResponse.tool_calls.map(tc => tc.name).join(", ")}*`;
+          }
+
+          // Append thread ID for follow-up conversations
+          if (chatResponse.thread_id) {
+            answer += `\n\n*Thread: \`${chatResponse.thread_id}\` — use this thread_id for follow-up questions*`;
           }
 
           return {
@@ -4297,11 +4307,15 @@ Recent events: ${eventsResult.events?.map(e => e.title).join(", ") || "None"}
             ],
           };
         } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          if (message === "AUTH_REQUIRED") {
+            return this.handleError(error);
+          }
           return {
             content: [
               {
                 type: "text" as const,
-                text: `I encountered an error processing your question. Please try rephrasing or use specific tool commands.`,
+                text: `## Error Processing Question\n\n${message}\n\n**Tip:** If this is an AI configuration issue, ensure your AI provider keys are set in Settings → AI Configuration.`,
               },
             ],
             isError: true,
@@ -6503,7 +6517,7 @@ Recent events: ${eventsResult.events?.map(e => e.title).join(", ") || "None"}
           await this.requireAuth();
 
           const result = await this.callBrainAPIWithAuth<ScheduleRunResponse>(
-            `/api/v1/schedules/${schedule_id}/run`,
+            `/api/v1/schedules/${schedule_id}/trigger`,
             "POST"
           );
 
@@ -7101,6 +7115,1732 @@ Recent events: ${eventsResult.events?.map(e => e.title).join(", ") || "None"}
         } catch (error) {
           return this.handleError(error);
         }
+      }
+    );
+
+    // =========================================================================
+    // P1 NEW TOOLS: Test CRUD, Test Runs, Reports, Projects, Flaky Tests,
+    // Integrations, Failure Patterns, Healing Extensions, Schedule Completion
+    // =========================================================================
+
+    // Tool: argus_test_list - List tests for a project
+    this.server.tool(
+      "argus_test_list",
+      "List all tests for a project with optional filtering by status, type, or search query.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        status: z.enum(["all", "active", "disabled", "draft"]).optional().describe("Filter by test status"),
+        type: z.string().optional().describe("Filter by test type (e.g., 'e2e', 'api', 'unit')"),
+        search: z.string().optional().describe("Search query to filter tests by name"),
+        limit: z.number().optional().describe("Max results (default 50)"),
+        offset: z.number().optional().describe("Pagination offset"),
+      },
+      async ({ project_id, status, type, search, limit, offset }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (status && status !== "all") params.append("status", status);
+          if (type) params.append("type", type);
+          if (search) params.append("search", search);
+          if (limit) params.append("limit", String(limit));
+          if (offset) params.append("offset", String(offset));
+
+          const result = await this.callBrainAPIWithAuth<{ tests: Array<{ id: string; name: string; status: string; type: string; created_at: string; last_run_at?: string }>; total: number }>(
+            `/api/v1/tests?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Tests (${result.total} total)\n\n`;
+          output += `| # | Name | Status | Type | Last Run |\n|---|------|--------|------|----------|\n`;
+          (result.tests || []).forEach((t, i) => {
+            output += `| ${i + 1} | ${t.name} | ${t.status} | ${t.type || "-"} | ${t.last_run_at ? new Date(t.last_run_at).toLocaleDateString() : "Never"} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_get - Get a single test by ID
+    this.server.tool(
+      "argus_test_get",
+      "Get full details of a specific test including steps, assertions, and run history.",
+      {
+        test_id: z.string().describe("The test UUID"),
+      },
+      async ({ test_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; description?: string; steps: unknown[]; status: string; type: string; created_at: string; updated_at: string; tags?: string[] }>(
+            `/api/v1/tests/${test_id}`,
+            "GET"
+          );
+
+          let output = `## Test: ${result.name}\n\n`;
+          output += `| Field | Value |\n|-------|-------|\n`;
+          output += `| **ID** | \`${result.id}\` |\n`;
+          output += `| **Status** | ${result.status} |\n`;
+          output += `| **Type** | ${result.type || "-"} |\n`;
+          output += `| **Created** | ${new Date(result.created_at).toLocaleString()} |\n`;
+          output += `| **Updated** | ${new Date(result.updated_at).toLocaleString()} |\n`;
+          if (result.tags?.length) output += `| **Tags** | ${result.tags.join(", ")} |\n`;
+          if (result.description) output += `\n**Description:** ${result.description}\n`;
+          if (result.steps?.length) output += `\n**Steps:** ${result.steps.length} step(s)\n`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_create - Create a new test
+    this.server.tool(
+      "argus_test_create",
+      "Create a new test case with name, steps, and optional metadata.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        name: z.string().describe("Test name"),
+        description: z.string().optional().describe("Test description"),
+        type: z.string().optional().describe("Test type (e.g., 'e2e', 'api')"),
+        steps: z.array(z.object({
+          action: z.string().describe("Step action"),
+          target: z.string().optional().describe("Target selector/URL"),
+          value: z.string().optional().describe("Input value"),
+          assertion: z.string().optional().describe("Expected assertion"),
+        })).optional().describe("Test steps"),
+        tags: z.array(z.string()).optional().describe("Tags for the test"),
+      },
+      async ({ project_id, name, description, type, steps, tags }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; status: string }>(
+            `/api/v1/tests`,
+            "POST",
+            { project_id, name, description, type, steps, tags }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Test Created\n\n**ID:** \`${result.id}\`\n**Name:** ${result.name}\n**Status:** ${result.status}\n\n**Next:** Use \`argus_test_run_create\` to execute this test.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_update - Update an existing test
+    this.server.tool(
+      "argus_test_update",
+      "Update a test's name, description, steps, status, or tags.",
+      {
+        test_id: z.string().describe("The test UUID"),
+        name: z.string().optional().describe("New test name"),
+        description: z.string().optional().describe("New description"),
+        status: z.string().optional().describe("New status"),
+        steps: z.array(z.object({
+          action: z.string(),
+          target: z.string().optional(),
+          value: z.string().optional(),
+          assertion: z.string().optional(),
+        })).optional().describe("Updated steps"),
+        tags: z.array(z.string()).optional().describe("Updated tags"),
+      },
+      async ({ test_id, ...updates }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; status: string; updated_at: string }>(
+            `/api/v1/tests/${test_id}`,
+            "PUT",
+            updates
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Test Updated\n\n**ID:** \`${result.id}\`\n**Name:** ${result.name}\n**Status:** ${result.status}\n**Updated:** ${new Date(result.updated_at).toLocaleString()}` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_delete - Delete a test
+    this.server.tool(
+      "argus_test_delete",
+      "Permanently delete a test case. This cannot be undone.",
+      {
+        test_id: z.string().describe("The test UUID to delete"),
+      },
+      async ({ test_id }) => {
+        try {
+          await this.requireAuth();
+          await this.callBrainAPIWithAuth<{ success: boolean }>(
+            `/api/v1/tests/${test_id}`,
+            "DELETE"
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Test Deleted\n\nTest \`${test_id}\` has been permanently deleted.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_run_list - List test runs
+    this.server.tool(
+      "argus_test_run_list",
+      "List test runs for a project, optionally filtered by status or date range.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        status: z.string().optional().describe("Filter by run status (passed, failed, running, pending)"),
+        limit: z.number().optional().describe("Max results (default 20)"),
+      },
+      async ({ project_id, status, limit }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (status) params.append("status", status);
+          if (limit) params.append("limit", String(limit));
+
+          const result = await this.callBrainAPIWithAuth<{ runs: Array<{ id: string; status: string; total_tests: number; passed: number; failed: number; started_at: string; duration_ms?: number }>; total: number }>(
+            `/api/v1/test-runs?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Test Runs (${result.total} total)\n\n`;
+          output += `| # | ID | Status | Tests | Passed | Failed | Duration |\n|---|-----|--------|-------|--------|--------|----------|\n`;
+          (result.runs || []).forEach((r, i) => {
+            const dur = r.duration_ms ? `${(r.duration_ms / 1000).toFixed(1)}s` : "-";
+            const emoji = r.status === "passed" ? "✅" : r.status === "failed" ? "❌" : r.status === "running" ? "🔄" : "⏳";
+            output += `| ${i + 1} | \`${r.id.slice(0, 8)}\` | ${emoji} ${r.status} | ${r.total_tests} | ${r.passed} | ${r.failed} | ${dur} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_run_get - Get test run details
+    this.server.tool(
+      "argus_test_run_get",
+      "Get full details of a specific test run including individual test results.",
+      {
+        run_id: z.string().describe("The test run UUID"),
+      },
+      async ({ run_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; status: string; total_tests: number; passed: number; failed: number; skipped: number; started_at: string; completed_at?: string; duration_ms?: number; environment?: string }>(
+            `/api/v1/test-runs/${run_id}`,
+            "GET"
+          );
+
+          let output = `## Test Run: \`${result.id}\`\n\n`;
+          output += `| Metric | Value |\n|--------|-------|\n`;
+          output += `| **Status** | ${result.status} |\n`;
+          output += `| **Total Tests** | ${result.total_tests} |\n`;
+          output += `| **Passed** | ✅ ${result.passed} |\n`;
+          output += `| **Failed** | ❌ ${result.failed} |\n`;
+          if (result.skipped) output += `| **Skipped** | ⏭️ ${result.skipped} |\n`;
+          output += `| **Started** | ${new Date(result.started_at).toLocaleString()} |\n`;
+          if (result.completed_at) output += `| **Completed** | ${new Date(result.completed_at).toLocaleString()} |\n`;
+          if (result.duration_ms) output += `| **Duration** | ${(result.duration_ms / 1000).toFixed(1)}s |\n`;
+          if (result.environment) output += `| **Environment** | ${result.environment} |\n`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_run_create - Start a new test run
+    this.server.tool(
+      "argus_test_run_create",
+      "Start a new test run to execute one or more tests.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        test_ids: z.array(z.string()).optional().describe("Specific test IDs to run (all if omitted)"),
+        environment: z.string().optional().describe("Target environment (e.g., 'staging', 'production')"),
+        app_url: z.string().optional().describe("Application URL to test against"),
+      },
+      async ({ project_id, test_ids, environment, app_url }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; status: string; total_tests: number }>(
+            `/api/v1/test-runs`,
+            "POST",
+            { project_id, test_ids, environment, app_url }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Test Run Started\n\n**Run ID:** \`${result.id}\`\n**Status:** ${result.status}\n**Tests:** ${result.total_tests}\n\n**Next:** Use \`argus_test_run_get("${result.id}")\` to check progress.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_test_run_results - Get results for a test run
+    this.server.tool(
+      "argus_test_run_results",
+      "Get detailed results for each test in a run, including errors and screenshots.",
+      {
+        run_id: z.string().describe("The test run UUID"),
+      },
+      async ({ run_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ results: Array<{ test_id: string; test_name: string; status: string; duration_ms?: number; error_message?: string; screenshots?: string[] }> }>(
+            `/api/v1/test-runs/${run_id}/results`,
+            "GET"
+          );
+
+          let output = `## Test Run Results\n\n`;
+          (result.results || []).forEach((r, i) => {
+            const emoji = r.status === "passed" ? "✅" : r.status === "failed" ? "❌" : "⏭️";
+            output += `### ${i + 1}. ${emoji} ${r.test_name}\n`;
+            output += `- **Status:** ${r.status}\n`;
+            if (r.duration_ms) output += `- **Duration:** ${(r.duration_ms / 1000).toFixed(1)}s\n`;
+            if (r.error_message) output += `- **Error:** \`${r.error_message}\`\n`;
+            output += `\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_report_generate - Generate a test report
+    this.server.tool(
+      "argus_report_generate",
+      "Generate a comprehensive test report for a project or specific test run.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        run_id: z.string().optional().describe("Specific test run ID (latest if omitted)"),
+        format: z.enum(["html", "pdf", "json", "markdown"]).optional().describe("Report format (default: markdown)"),
+        include_screenshots: z.boolean().optional().describe("Include screenshots in report"),
+      },
+      async ({ project_id, run_id, format, include_screenshots }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; status: string; format: string; url?: string; summary?: string }>(
+            `/api/v1/reports/generate`,
+            "POST",
+            { project_id, run_id, format: format || "markdown", include_screenshots }
+          );
+
+          let output = `## Report Generated\n\n`;
+          output += `**Report ID:** \`${result.id}\`\n`;
+          output += `**Format:** ${result.format}\n`;
+          output += `**Status:** ${result.status}\n`;
+          if (result.url) output += `**Download:** ${result.url}\n`;
+          if (result.summary) output += `\n### Summary\n${result.summary}\n`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_report_list - List reports
+    this.server.tool(
+      "argus_report_list",
+      "List generated reports for a project.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        limit: z.number().optional().describe("Max results"),
+      },
+      async ({ project_id, limit }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (limit) params.append("limit", String(limit));
+
+          const result = await this.callBrainAPIWithAuth<{ reports: Array<{ id: string; format: string; created_at: string; status: string }> }>(
+            `/api/v1/reports?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Reports\n\n`;
+          output += `| # | ID | Format | Status | Created |\n|---|-----|--------|--------|----------|\n`;
+          (result.reports || []).forEach((r, i) => {
+            output += `| ${i + 1} | \`${r.id.slice(0, 8)}\` | ${r.format} | ${r.status} | ${new Date(r.created_at).toLocaleDateString()} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_report_get - Get report details
+    this.server.tool(
+      "argus_report_get",
+      "Get full details and content of a specific report.",
+      {
+        report_id: z.string().describe("The report UUID"),
+      },
+      async ({ report_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; format: string; content?: string; url?: string; status: string; created_at: string }>(
+            `/api/v1/reports/${report_id}`,
+            "GET"
+          );
+
+          let output = `## Report: \`${result.id}\`\n\n`;
+          output += `**Format:** ${result.format} | **Status:** ${result.status} | **Created:** ${new Date(result.created_at).toLocaleString()}\n\n`;
+          if (result.content) output += result.content;
+          if (result.url) output += `\n**Download:** ${result.url}\n`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_report_download - Download a report
+    this.server.tool(
+      "argus_report_download",
+      "Get a download URL for a report file.",
+      {
+        report_id: z.string().describe("The report UUID"),
+      },
+      async ({ report_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ url: string; format: string; expires_at?: string }>(
+            `/api/v1/reports/${report_id}/download`,
+            "GET"
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Report Download\n\n**URL:** ${result.url}\n**Format:** ${result.format}\n${result.expires_at ? `**Expires:** ${new Date(result.expires_at).toLocaleString()}` : ""}` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_project_create - Create a new project
+    this.server.tool(
+      "argus_project_create",
+      "Create a new Argus project to organize tests, events, and quality tracking.",
+      {
+        name: z.string().describe("Project name"),
+        description: z.string().optional().describe("Project description"),
+        repository_url: z.string().optional().describe("Git repository URL (enables code-aware features)"),
+        app_url: z.string().optional().describe("Application URL for testing"),
+      },
+      async ({ name, description, repository_url, app_url }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; created_at: string }>(
+            `/api/v1/projects`,
+            "POST",
+            { name, description, repository_url, app_url }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Project Created\n\n**ID:** \`${result.id}\`\n**Name:** ${result.name}\n**Created:** ${new Date(result.created_at).toLocaleString()}\n\n**Next:** Set up integrations with \`argus_integrations_connect\` or start testing with \`argus_test_create\`.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_project_get - Get project details
+    this.server.tool(
+      "argus_project_get",
+      "Get full details of a project including settings, integrations, and configuration.",
+      {
+        project_id: z.string().describe("The project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; description?: string; repository_url?: string; app_url?: string; created_at: string; settings?: Record<string, unknown> }>(
+            `/api/v1/projects/${project_id}`,
+            "GET"
+          );
+
+          let output = `## Project: ${result.name}\n\n`;
+          output += `| Field | Value |\n|-------|-------|\n`;
+          output += `| **ID** | \`${result.id}\` |\n`;
+          if (result.description) output += `| **Description** | ${result.description} |\n`;
+          if (result.repository_url) output += `| **Repository** | ${result.repository_url} |\n`;
+          if (result.app_url) output += `| **App URL** | ${result.app_url} |\n`;
+          output += `| **Created** | ${new Date(result.created_at).toLocaleString()} |\n`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_project_update - Update a project
+    this.server.tool(
+      "argus_project_update",
+      "Update project settings, name, description, or configuration.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        name: z.string().optional().describe("New name"),
+        description: z.string().optional().describe("New description"),
+        repository_url: z.string().optional().describe("Git repository URL"),
+        app_url: z.string().optional().describe("Application URL"),
+      },
+      async ({ project_id, ...updates }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; updated_at: string }>(
+            `/api/v1/projects/${project_id}`,
+            "PUT",
+            updates
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Project Updated\n\n**ID:** \`${result.id}\`\n**Name:** ${result.name}\n**Updated:** ${new Date(result.updated_at).toLocaleString()}` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_flaky_tests - List flaky tests
+    this.server.tool(
+      "argus_flaky_tests",
+      "List tests that have been detected as flaky (intermittent failures) with confidence scores.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        min_flakiness: z.number().optional().describe("Minimum flakiness score (0-1, default 0.1)"),
+        limit: z.number().optional().describe("Max results"),
+      },
+      async ({ project_id, min_flakiness, limit }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (min_flakiness !== undefined) params.append("min_flakiness", String(min_flakiness));
+          if (limit) params.append("limit", String(limit));
+
+          const result = await this.callBrainAPIWithAuth<FlakyTestsResponse>(
+            `/api/v1/flaky-tests?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Flaky Tests\n\n`;
+          output += `| # | Test Name | Flakiness | Pass Rate | Total Runs |\n|---|-----------|-----------|-----------|------------|\n`;
+          (result.flaky_tests || []).forEach((t, i) => {
+            const emoji = t.flakiness_score > 0.5 ? "🔴" : t.flakiness_score > 0.2 ? "🟡" : "🟢";
+            output += `| ${i + 1} | ${t.test_name} | ${emoji} ${(t.flakiness_score * 100).toFixed(0)}% | ${(t.pass_rate * 100).toFixed(0)}% | ${t.total_runs} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_flaky_trend - Get flaky test trend over time
+    this.server.tool(
+      "argus_flaky_trend",
+      "Get trend data showing how test flakiness has changed over time.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        days: z.number().optional().describe("Number of days to look back (default 30)"),
+      },
+      async ({ project_id, days }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (days) params.append("days", String(days));
+
+          const result = await this.callBrainAPIWithAuth<{ trend: Array<{ date: string; flaky_count: number; total_tests: number; flakiness_rate: number }> }>(
+            `/api/v1/flaky-tests/trend?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Flaky Test Trend (${days || 30} days)\n\n`;
+          output += `| Date | Flaky Count | Total | Rate |\n|------|-------------|-------|------|\n`;
+          (result.trend || []).forEach(t => {
+            output += `| ${t.date} | ${t.flaky_count} | ${t.total_tests} | ${(t.flakiness_rate * 100).toFixed(1)}% |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_flaky_quarantine - Quarantine a flaky test
+    this.server.tool(
+      "argus_flaky_quarantine",
+      "Quarantine a flaky test to stop it from blocking CI pipelines while it's being fixed.",
+      {
+        test_id: z.string().describe("The flaky test UUID to quarantine"),
+        reason: z.string().optional().describe("Reason for quarantining"),
+      },
+      async ({ test_id, reason }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; quarantined: boolean; quarantined_at: string }>(
+            `/api/v1/flaky-tests/${test_id}/quarantine`,
+            "POST",
+            { reason }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Test Quarantined\n\n**Test ID:** \`${result.id}\`\n**Quarantined:** ${result.quarantined ? "Yes" : "No"}\n**Since:** ${new Date(result.quarantined_at).toLocaleString()}\n${reason ? `**Reason:** ${reason}` : ""}\n\nThe test will be excluded from CI/CD gate decisions until un-quarantined.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_integrations_list - List connected integrations
+    this.server.tool(
+      "argus_integrations_list",
+      "List all connected integrations (Sentry, GitHub, Jira, Datadog, etc.) and their sync status.",
+      {
+        project_id: z.string().optional().describe("Filter by project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const params = project_id ? `?project_id=${project_id}` : "";
+
+          const result = await this.callBrainAPIWithAuth<{ integrations: Array<{ id: string; platform: string; status: string; last_sync?: string; project_id?: string }> }>(
+            `/api/v1/integrations${params}`,
+            "GET"
+          );
+
+          let output = `## Connected Integrations\n\n`;
+          output += `| # | Platform | Status | Last Sync | Project |\n|---|----------|--------|-----------|----------|\n`;
+          (result.integrations || []).forEach((intg, i) => {
+            const statusEmoji = intg.status === "active" ? "🟢" : intg.status === "error" ? "🔴" : "🟡";
+            output += `| ${i + 1} | ${intg.platform} | ${statusEmoji} ${intg.status} | ${intg.last_sync ? new Date(intg.last_sync).toLocaleDateString() : "Never"} | ${intg.project_id ? `\`${intg.project_id.slice(0, 8)}\`` : "-"} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_integrations_connect - Connect a new integration
+    this.server.tool(
+      "argus_integrations_connect",
+      "Connect a new integration platform (Sentry, GitHub, Jira, Datadog, PagerDuty, etc.).",
+      {
+        platform: z.string().describe("Integration platform (e.g., 'sentry', 'github', 'jira', 'datadog')"),
+        project_id: z.string().describe("Project UUID to connect to"),
+        credentials: z.record(z.string()).describe("Platform-specific credentials (e.g., {api_key, org_slug})"),
+        config: z.record(z.unknown()).optional().describe("Additional configuration"),
+      },
+      async ({ platform, project_id, credentials, config }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; platform: string; status: string }>(
+            `/api/v1/integrations/connect`,
+            "POST",
+            { platform, project_id, credentials, config }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Integration Connected\n\n**ID:** \`${result.id}\`\n**Platform:** ${result.platform}\n**Status:** ${result.status}\n\n**Next:** Use \`argus_integrations_sync\` to trigger initial data sync.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_integrations_disconnect - Disconnect an integration
+    this.server.tool(
+      "argus_integrations_disconnect",
+      "Disconnect an integration and stop syncing data from it.",
+      {
+        integration_id: z.string().describe("The integration UUID to disconnect"),
+      },
+      async ({ integration_id }) => {
+        try {
+          await this.requireAuth();
+          await this.callBrainAPIWithAuth<{ success: boolean }>(
+            `/api/v1/integrations/${integration_id}/disconnect`,
+            "POST"
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Integration Disconnected\n\nIntegration \`${integration_id}\` has been disconnected. No further data will be synced from this source.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_integrations_sync - Trigger integration sync
+    this.server.tool(
+      "argus_integrations_sync",
+      "Manually trigger a data sync from a connected integration.",
+      {
+        integration_id: z.string().describe("The integration UUID to sync"),
+      },
+      async ({ integration_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ status: string; events_synced?: number; last_sync: string }>(
+            `/api/v1/integrations/${integration_id}/trigger-sync`,
+            "POST"
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Sync Triggered\n\n**Status:** ${result.status}\n${result.events_synced !== undefined ? `**Events Synced:** ${result.events_synced}\n` : ""}**Last Sync:** ${new Date(result.last_sync).toLocaleString()}` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_failure_patterns - List learned failure patterns
+    this.server.tool(
+      "argus_failure_patterns",
+      "List all learned failure patterns including selector changes, API changes, and timing issues.",
+      {
+        project_id: z.string().optional().describe("Filter by project UUID"),
+        pattern_type: z.string().optional().describe("Filter by pattern type (e.g., 'selector_changed', 'api_changed', 'timing')"),
+        limit: z.number().optional().describe("Max results"),
+      },
+      async ({ project_id, pattern_type, limit }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams();
+          if (project_id) params.append("project_id", project_id);
+          if (pattern_type) params.append("pattern_type", pattern_type);
+          if (limit) params.append("limit", String(limit));
+
+          const result = await this.callBrainAPIWithAuth<{ patterns: Array<{ id: string; pattern_type: string; description: string; occurrences: number; confidence: number; last_seen: string }> }>(
+            `/api/v1/patterns?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Failure Patterns\n\n`;
+          output += `| # | Type | Description | Occurrences | Confidence | Last Seen |\n|---|------|-------------|-------------|------------|------------|\n`;
+          (result.patterns || []).forEach((p, i) => {
+            output += `| ${i + 1} | ${p.pattern_type} | ${p.description.slice(0, 60)} | ${p.occurrences} | ${(p.confidence * 100).toFixed(0)}% | ${new Date(p.last_seen).toLocaleDateString()} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_failure_predict - Predict potential failures
+    this.server.tool(
+      "argus_failure_predict",
+      "Use AI to predict which tests are likely to fail based on code changes and historical patterns.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        changed_files: z.array(z.string()).optional().describe("List of changed file paths"),
+        commit_sha: z.string().optional().describe("Git commit SHA to analyze"),
+      },
+      async ({ project_id, changed_files, commit_sha }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ predictions: Array<{ test_name: string; failure_probability: number; reason: string; pattern_id?: string }> }>(
+            `/api/v1/patterns/predict`,
+            "POST",
+            { project_id, changed_files, commit_sha }
+          );
+
+          let output = `## Failure Predictions\n\n`;
+          (result.predictions || []).forEach((p, i) => {
+            const emoji = p.failure_probability > 0.7 ? "🔴" : p.failure_probability > 0.4 ? "🟡" : "🟢";
+            output += `${i + 1}. ${emoji} **${p.test_name}** — ${(p.failure_probability * 100).toFixed(0)}% failure probability\n`;
+            output += `   Reason: ${p.reason}\n\n`;
+          });
+
+          if (!result.predictions?.length) {
+            output += "No significant failure predictions for these changes.\n";
+          }
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_failure_train - Train failure pattern model
+    this.server.tool(
+      "argus_failure_train",
+      "Manually trigger retraining of the failure pattern model with latest data.",
+      {
+        project_id: z.string().describe("The project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ status: string; patterns_learned: number; training_duration_ms?: number }>(
+            `/api/v1/patterns/train`,
+            "POST",
+            { project_id }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Pattern Training Complete\n\n**Status:** ${result.status}\n**Patterns Learned:** ${result.patterns_learned}\n${result.training_duration_ms ? `**Duration:** ${(result.training_duration_ms / 1000).toFixed(1)}s` : ""}` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_healing_suggest - Get healing suggestions for a failure
+    this.server.tool(
+      "argus_healing_suggest",
+      "Get AI-powered fix suggestions for a test failure without auto-applying them.",
+      {
+        org_id: z.string().describe("The organization UUID"),
+        failure_id: z.string().describe("The failure UUID to get suggestions for"),
+        test_id: z.string().optional().describe("The test UUID for additional context"),
+      },
+      async ({ org_id, failure_id, test_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ suggestions: Array<{ type: string; description: string; confidence: number; fix: Record<string, unknown>; source: string }> }>(
+            `/api/v1/healing/${org_id}/suggest`,
+            "POST",
+            { failure_id, test_id }
+          );
+
+          let output = `## Healing Suggestions\n\n`;
+          (result.suggestions || []).forEach((s, i) => {
+            const emoji = s.confidence > 0.8 ? "🟢" : s.confidence > 0.5 ? "🟡" : "🔴";
+            output += `### ${i + 1}. ${s.type} (${emoji} ${(s.confidence * 100).toFixed(0)}% confidence)\n`;
+            output += `**Source:** ${s.source}\n`;
+            output += `**Description:** ${s.description}\n\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_healing_root_cause - Analyze root cause of a failure
+    this.server.tool(
+      "argus_healing_root_cause",
+      "Use AI to analyze the root cause of a test failure by examining code changes, DOM diffs, and historical patterns.",
+      {
+        org_id: z.string().describe("The organization UUID"),
+        failure_id: z.string().describe("The failure UUID to analyze"),
+      },
+      async ({ org_id, failure_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ root_cause: string; confidence: number; contributing_factors: string[]; recommended_fix: string; related_patterns: Array<{ id: string; description: string }> }>(
+            `/api/v1/healing/${org_id}/analyze-root-cause`,
+            "POST",
+            { failure_id }
+          );
+
+          let output = `## Root Cause Analysis\n\n`;
+          output += `**Root Cause:** ${result.root_cause}\n`;
+          output += `**Confidence:** ${(result.confidence * 100).toFixed(0)}%\n\n`;
+          if (result.contributing_factors?.length) {
+            output += `**Contributing Factors:**\n`;
+            result.contributing_factors.forEach(f => { output += `- ${f}\n`; });
+            output += `\n`;
+          }
+          output += `**Recommended Fix:** ${result.recommended_fix}\n`;
+          if (result.related_patterns?.length) {
+            output += `\n**Related Patterns:**\n`;
+            result.related_patterns.forEach(p => { output += `- \`${p.id}\`: ${p.description}\n`; });
+          }
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_healing_similar_errors - Find similar past errors
+    this.server.tool(
+      "argus_healing_similar_errors",
+      "Search for similar past errors using semantic search on the Cognee knowledge graph.",
+      {
+        org_id: z.string().describe("The organization UUID"),
+        error_message: z.string().describe("The error message to search for"),
+        error_type: z.string().optional().describe("Error type for filtering"),
+        limit: z.number().optional().describe("Max results (default 5)"),
+      },
+      async ({ org_id, error_message, error_type, limit }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ similar_errors: Array<{ error_message: string; error_type: string; similarity: number; resolution?: string; test_name?: string; occurred_at: string }> }>(
+            `/api/v1/healing/${org_id}/similar-errors`,
+            "POST",
+            { error_message, error_type, limit: limit || 5 }
+          );
+
+          let output = `## Similar Past Errors\n\n`;
+          (result.similar_errors || []).forEach((e, i) => {
+            output += `### ${i + 1}. ${(e.similarity * 100).toFixed(0)}% match\n`;
+            output += `**Error:** \`${e.error_message.slice(0, 100)}\`\n`;
+            output += `**Type:** ${e.error_type}\n`;
+            if (e.test_name) output += `**Test:** ${e.test_name}\n`;
+            output += `**When:** ${new Date(e.occurred_at).toLocaleDateString()}\n`;
+            if (e.resolution) output += `**Resolution:** ${e.resolution}\n`;
+            output += `\n`;
+          });
+
+          if (!result.similar_errors?.length) {
+            output += "No similar errors found in the knowledge graph.\n";
+          }
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_schedule_get - Get schedule details
+    this.server.tool(
+      "argus_schedule_get",
+      "Get full details of a test schedule including cron expression, tests, and configuration.",
+      {
+        schedule_id: z.string().describe("The schedule UUID"),
+      },
+      async ({ schedule_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; cron: string; enabled: boolean; project_id: string; test_ids?: string[]; environment?: string; created_at: string; next_run_at?: string }>(
+            `/api/v1/schedules/${schedule_id}`,
+            "GET"
+          );
+
+          let output = `## Schedule: ${result.name}\n\n`;
+          output += `| Field | Value |\n|-------|-------|\n`;
+          output += `| **ID** | \`${result.id}\` |\n`;
+          output += `| **Cron** | \`${result.cron}\` |\n`;
+          output += `| **Enabled** | ${result.enabled ? "Yes ✅" : "No ❌"} |\n`;
+          output += `| **Project** | \`${result.project_id}\` |\n`;
+          if (result.test_ids?.length) output += `| **Tests** | ${result.test_ids.length} test(s) |\n`;
+          if (result.environment) output += `| **Environment** | ${result.environment} |\n`;
+          output += `| **Created** | ${new Date(result.created_at).toLocaleString()} |\n`;
+          if (result.next_run_at) output += `| **Next Run** | ${new Date(result.next_run_at).toLocaleString()} |\n`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_schedule_update - Update a schedule
+    this.server.tool(
+      "argus_schedule_update",
+      "Update a test schedule's cron expression, name, enabled status, or test configuration.",
+      {
+        schedule_id: z.string().describe("The schedule UUID"),
+        name: z.string().optional().describe("New schedule name"),
+        cron: z.string().optional().describe("New cron expression"),
+        enabled: z.boolean().optional().describe("Enable/disable the schedule"),
+        test_ids: z.array(z.string()).optional().describe("Updated list of test IDs to run"),
+        environment: z.string().optional().describe("Target environment"),
+      },
+      async ({ schedule_id, ...updates }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ id: string; name: string; cron: string; enabled: boolean; updated_at: string }>(
+            `/api/v1/schedules/${schedule_id}`,
+            "PUT",
+            updates
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Schedule Updated\n\n**ID:** \`${result.id}\`\n**Name:** ${result.name}\n**Cron:** \`${result.cron}\`\n**Enabled:** ${result.enabled ? "Yes ✅" : "No ❌"}\n**Updated:** ${new Date(result.updated_at).toLocaleString()}` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_schedule_delete - Delete a schedule
+    this.server.tool(
+      "argus_schedule_delete",
+      "Permanently delete a test schedule. This stops all future runs.",
+      {
+        schedule_id: z.string().describe("The schedule UUID to delete"),
+      },
+      async ({ schedule_id }) => {
+        try {
+          await this.requireAuth();
+          await this.callBrainAPIWithAuth<{ success: boolean }>(
+            `/api/v1/schedules/${schedule_id}`,
+            "DELETE"
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Schedule Deleted\n\nSchedule \`${schedule_id}\` has been permanently deleted. No further test runs will be triggered by this schedule.` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // =========================================================================
+    // END P1 NEW TOOLS
+    // =========================================================================
+
+    // =========================================================================
+    // P2 TOOLS: Accessibility, Performance, SLO, Impact Graph, Chat,
+    // Parameterized, Insights, SAST
+    // =========================================================================
+
+    // Tool: argus_accessibility_audit - Run accessibility audit
+    this.server.tool(
+      "argus_accessibility_audit",
+      "Run a WCAG 2.1 accessibility audit on a URL, identifying violations, warnings, and best practice recommendations.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        url: z.string().describe("URL to audit"),
+        standard: z.enum(["WCAG2A", "WCAG2AA", "WCAG2AAA"]).optional().describe("WCAG standard level (default: WCAG2AA)"),
+      },
+      async ({ project_id, url, standard }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ score: number; violations: Array<{ rule: string; impact: string; description: string; nodes: number }>; passes: number; total_rules: number }>(
+            `/api/v1/accessibility/audit`,
+            "POST",
+            { project_id, url, standard: standard || "WCAG2AA" }
+          );
+
+          let output = `## Accessibility Audit\n\n**Score:** ${result.score}/100 | **Standard:** ${standard || "WCAG2AA"}\n**Passed:** ${result.passes}/${result.total_rules} rules\n\n`;
+          if (result.violations?.length) {
+            output += `### Violations (${result.violations.length})\n\n`;
+            output += `| # | Rule | Impact | Description | Nodes |\n|---|------|--------|-------------|-------|\n`;
+            result.violations.forEach((v, i) => {
+              const emoji = v.impact === "critical" ? "🔴" : v.impact === "serious" ? "🟠" : "🟡";
+              output += `| ${i + 1} | ${v.rule} | ${emoji} ${v.impact} | ${v.description.slice(0, 60)} | ${v.nodes} |\n`;
+            });
+          }
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_accessibility_issues - List accessibility issues
+    this.server.tool(
+      "argus_accessibility_issues",
+      "List open accessibility issues found across audits for a project.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        impact: z.string().optional().describe("Filter by impact level (critical, serious, moderate, minor)"),
+      },
+      async ({ project_id, impact }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (impact) params.append("impact", impact);
+
+          const result = await this.callBrainAPIWithAuth<{ issues: Array<{ id: string; rule: string; impact: string; url: string; status: string }>; total: number }>(
+            `/api/v1/accessibility/issues?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Accessibility Issues (${result.total})\n\n`;
+          output += `| # | Rule | Impact | URL | Status |\n|---|------|--------|-----|--------|\n`;
+          (result.issues || []).forEach((issue, i) => {
+            output += `| ${i + 1} | ${issue.rule} | ${issue.impact} | ${issue.url.slice(0, 40)} | ${issue.status} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_performance_tests - Run performance tests
+    this.server.tool(
+      "argus_performance_tests",
+      "Run performance tests to measure page load times, Core Web Vitals, and response times.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        url: z.string().describe("URL to test"),
+        iterations: z.number().optional().describe("Number of test iterations (default 3)"),
+      },
+      async ({ project_id, url, iterations }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ metrics: { lcp_ms: number; fid_ms: number; cls: number; ttfb_ms: number; fcp_ms: number }; grade: string }>(
+            `/api/v1/performance/test`,
+            "POST",
+            { project_id, url, iterations: iterations || 3 }
+          );
+
+          const m = result.metrics;
+          let output = `## Performance Test: ${url}\n\n**Grade:** ${result.grade}\n\n`;
+          output += `| Metric | Value | Status |\n|--------|-------|--------|\n`;
+          output += `| LCP (Largest Contentful Paint) | ${m.lcp_ms}ms | ${m.lcp_ms < 2500 ? "🟢 Good" : m.lcp_ms < 4000 ? "🟡 Needs Work" : "🔴 Poor"} |\n`;
+          output += `| FID (First Input Delay) | ${m.fid_ms}ms | ${m.fid_ms < 100 ? "🟢 Good" : m.fid_ms < 300 ? "🟡 Needs Work" : "🔴 Poor"} |\n`;
+          output += `| CLS (Cumulative Layout Shift) | ${m.cls} | ${m.cls < 0.1 ? "🟢 Good" : m.cls < 0.25 ? "🟡 Needs Work" : "🔴 Poor"} |\n`;
+          output += `| TTFB (Time to First Byte) | ${m.ttfb_ms}ms | ${m.ttfb_ms < 800 ? "🟢 Good" : "🟡 Slow"} |\n`;
+          output += `| FCP (First Contentful Paint) | ${m.fcp_ms}ms | ${m.fcp_ms < 1800 ? "🟢 Good" : "🟡 Slow"} |\n`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_performance_trends - Get performance trends
+    this.server.tool(
+      "argus_performance_trends",
+      "Get performance metric trends over time to identify regressions.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        days: z.number().optional().describe("Days to look back (default 30)"),
+        url: z.string().optional().describe("Filter by specific URL"),
+      },
+      async ({ project_id, days, url }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (days) params.append("days", String(days));
+          if (url) params.append("url", url);
+
+          const result = await this.callBrainAPIWithAuth<{ trends: Array<{ date: string; lcp_ms: number; cls: number; ttfb_ms: number }> }>(
+            `/api/v1/performance/trends?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Performance Trends\n\n`;
+          output += `| Date | LCP (ms) | CLS | TTFB (ms) |\n|------|----------|-----|----------|\n`;
+          (result.trends || []).forEach(t => {
+            output += `| ${t.date} | ${t.lcp_ms} | ${t.cls.toFixed(3)} | ${t.ttfb_ms} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_performance_summary - Get performance summary
+    this.server.tool(
+      "argus_performance_summary",
+      "Get a summary of performance metrics across all monitored URLs in a project.",
+      {
+        project_id: z.string().describe("The project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ urls: Array<{ url: string; avg_lcp_ms: number; avg_cls: number; grade: string; tests_run: number }> }>(
+            `/api/v1/performance/summary?project_id=${project_id}`,
+            "GET"
+          );
+
+          let output = `## Performance Summary\n\n`;
+          output += `| URL | Avg LCP | Avg CLS | Grade | Tests |\n|-----|---------|---------|-------|-------|\n`;
+          (result.urls || []).forEach(u => {
+            output += `| ${u.url.slice(0, 50)} | ${u.avg_lcp_ms}ms | ${u.avg_cls.toFixed(3)} | ${u.grade} | ${u.tests_run} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_slo_compliance - Check SLO compliance
+    this.server.tool(
+      "argus_slo_compliance",
+      "Check Service Level Objective compliance for test reliability, performance, and availability.",
+      {
+        project_id: z.string().describe("The project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ slos: Array<{ name: string; target: number; current: number; compliant: boolean; window: string }> }>(
+            `/api/v1/slo/compliance?project_id=${project_id}`,
+            "GET"
+          );
+
+          let output = `## SLO Compliance\n\n`;
+          output += `| SLO | Target | Current | Status | Window |\n|-----|--------|---------|--------|--------|\n`;
+          (result.slos || []).forEach(s => {
+            const emoji = s.compliant ? "✅" : "❌";
+            output += `| ${s.name} | ${(s.target * 100).toFixed(1)}% | ${(s.current * 100).toFixed(1)}% | ${emoji} | ${s.window} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_slo_error_budget - Check remaining error budget
+    this.server.tool(
+      "argus_slo_error_budget",
+      "Check remaining error budget for each SLO to know how much room for failures exists.",
+      {
+        project_id: z.string().describe("The project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ budgets: Array<{ slo_name: string; budget_total: number; budget_remaining: number; budget_consumed_pct: number; burn_rate: number }> }>(
+            `/api/v1/slo/error-budget?project_id=${project_id}`,
+            "GET"
+          );
+
+          let output = `## Error Budget Status\n\n`;
+          output += `| SLO | Budget | Remaining | Consumed | Burn Rate |\n|-----|--------|-----------|----------|----------|\n`;
+          (result.budgets || []).forEach(b => {
+            const emoji = b.budget_consumed_pct > 80 ? "🔴" : b.budget_consumed_pct > 50 ? "🟡" : "🟢";
+            output += `| ${b.slo_name} | ${b.budget_total} | ${b.budget_remaining} | ${emoji} ${b.budget_consumed_pct.toFixed(0)}% | ${b.burn_rate.toFixed(2)}x |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_slo_critical - Get critical SLO alerts
+    this.server.tool(
+      "argus_slo_critical",
+      "Get SLOs that are at risk of breaching their targets.",
+      {
+        project_id: z.string().describe("The project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ alerts: Array<{ slo_name: string; status: string; message: string; time_to_breach?: string }> }>(
+            `/api/v1/slo/critical?project_id=${project_id}`,
+            "GET"
+          );
+
+          let output = `## Critical SLO Alerts\n\n`;
+          if (!result.alerts?.length) {
+            output += "All SLOs are healthy. No critical alerts.\n";
+          } else {
+            result.alerts.forEach((a, i) => {
+              output += `### ${i + 1}. ${a.slo_name}\n`;
+              output += `**Status:** ${a.status}\n**Message:** ${a.message}\n`;
+              if (a.time_to_breach) output += `**Time to Breach:** ${a.time_to_breach}\n`;
+              output += `\n`;
+            });
+          }
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_impact_affected - Get affected components from code changes
+    this.server.tool(
+      "argus_impact_affected",
+      "Analyze which components, tests, and user flows are affected by code changes.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        changed_files: z.array(z.string()).describe("List of changed file paths"),
+      },
+      async ({ project_id, changed_files }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ affected: Array<{ component: string; type: string; impact_level: string; tests: string[] }> }>(
+            `/api/v1/impact-graph/affected`,
+            "POST",
+            { project_id, changed_files }
+          );
+
+          let output = `## Impact Analysis\n\n`;
+          (result.affected || []).forEach((a, i) => {
+            const emoji = a.impact_level === "high" ? "🔴" : a.impact_level === "medium" ? "🟡" : "🟢";
+            output += `### ${i + 1}. ${a.component} (${emoji} ${a.impact_level})\n`;
+            output += `**Type:** ${a.type}\n`;
+            if (a.tests.length) output += `**Affected Tests:** ${a.tests.join(", ")}\n`;
+            output += `\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_impact_coverage - Get impact graph coverage
+    this.server.tool(
+      "argus_impact_coverage",
+      "Get test coverage mapped to the dependency graph showing which code paths have test coverage.",
+      {
+        project_id: z.string().describe("The project UUID"),
+      },
+      async ({ project_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ coverage_pct: number; nodes: number; covered_nodes: number; uncovered_critical: string[] }>(
+            `/api/v1/impact-graph/coverage?project_id=${project_id}`,
+            "GET"
+          );
+
+          let output = `## Impact Graph Coverage\n\n`;
+          output += `**Overall:** ${result.coverage_pct.toFixed(1)}%\n`;
+          output += `**Nodes:** ${result.covered_nodes}/${result.nodes} covered\n\n`;
+          if (result.uncovered_critical?.length) {
+            output += `### Uncovered Critical Paths\n`;
+            result.uncovered_critical.forEach(p => { output += `- ${p}\n`; });
+          }
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_chat_message - Send chat message to AI assistant
+    this.server.tool(
+      "argus_chat_message",
+      "Send a message to the Argus AI chat assistant with full context awareness, tool use, and conversation memory.",
+      {
+        message: z.string().describe("Your message"),
+        thread_id: z.string().optional().describe("Thread ID for conversation continuity"),
+        project_id: z.string().optional().describe("Project context"),
+      },
+      async ({ message, thread_id, project_id }) => {
+        try {
+          await this.requireAuth();
+          let content = message;
+          if (project_id) content = `[Project: ${project_id}] ${content}`;
+
+          const result = await this.callBrainAPIWithAuth<{ message: string; thread_id: string; tool_calls?: Array<{ name: string }> }>(
+            `/api/v1/chat/message`,
+            "POST",
+            { messages: [{ role: "user", content }], thread_id }
+          );
+
+          let output = result.message;
+          if (result.thread_id) output += `\n\n*Thread: \`${result.thread_id}\`*`;
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_chat_history - Get chat history
+    this.server.tool(
+      "argus_chat_history",
+      "Get chat conversation history for a thread.",
+      {
+        thread_id: z.string().describe("The conversation thread ID"),
+      },
+      async ({ thread_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ messages: Array<{ role: string; content: string; timestamp: string }> }>(
+            `/api/v1/chat/history?thread_id=${thread_id}`,
+            "GET"
+          );
+
+          let output = `## Chat History (Thread: \`${thread_id}\`)\n\n`;
+          (result.messages || []).forEach(m => {
+            const icon = m.role === "user" ? "👤" : "🤖";
+            output += `${icon} **${m.role}** (${new Date(m.timestamp).toLocaleTimeString()}):\n${m.content.slice(0, 200)}\n\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_chat_threads - List chat threads
+    this.server.tool(
+      "argus_chat_threads",
+      "List all chat conversation threads.",
+      {
+        limit: z.number().optional().describe("Max results"),
+      },
+      async ({ limit }) => {
+        try {
+          await this.requireAuth();
+          const params = limit ? `?limit=${limit}` : "";
+          const result = await this.callBrainAPIWithAuth<{ threads: Array<{ id: string; title?: string; created_at: string; message_count: number }> }>(
+            `/api/v1/chat/threads${params}`,
+            "GET"
+          );
+
+          let output = `## Chat Threads\n\n`;
+          output += `| # | Thread ID | Title | Messages | Created |\n|---|-----------|-------|----------|---------|\n`;
+          (result.threads || []).forEach((t, i) => {
+            output += `| ${i + 1} | \`${t.id.slice(0, 8)}\` | ${t.title || "-"} | ${t.message_count} | ${new Date(t.created_at).toLocaleDateString()} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_param_expand - Expand parameterized test
+    this.server.tool(
+      "argus_param_expand",
+      "Expand a parameterized test template with data combinations to see all generated test variants.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        test_id: z.string().describe("The parameterized test UUID"),
+      },
+      async ({ project_id, test_id }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ variants: Array<{ name: string; parameters: Record<string, unknown> }> }>(
+            `/api/v1/parameterized/expand`,
+            "POST",
+            { project_id, test_id }
+          );
+
+          let output = `## Expanded Variants (${result.variants?.length || 0})\n\n`;
+          (result.variants || []).forEach((v, i) => {
+            output += `${i + 1}. **${v.name}**: ${JSON.stringify(v.parameters)}\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_param_execute - Execute parameterized tests
+    this.server.tool(
+      "argus_param_execute",
+      "Execute a parameterized test with all data combinations.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        test_id: z.string().describe("The parameterized test UUID"),
+        data_source: z.string().optional().describe("Data source ID for test parameters"),
+      },
+      async ({ project_id, test_id, data_source }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ run_id: string; total_variants: number; status: string }>(
+            `/api/v1/parameterized/execute`,
+            "POST",
+            { project_id, test_id, data_source }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Parameterized Test Execution\n\n**Run ID:** \`${result.run_id}\`\n**Variants:** ${result.total_variants}\n**Status:** ${result.status}` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_param_import - Import test parameters from CSV/JSON
+    this.server.tool(
+      "argus_param_import",
+      "Import test parameter data from CSV or JSON format for parameterized testing.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        test_id: z.string().describe("The parameterized test UUID"),
+        format: z.enum(["csv", "json"]).describe("Data format"),
+        data: z.string().describe("The parameter data (CSV or JSON string)"),
+      },
+      async ({ project_id, test_id, format, data }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ imported: number; data_source_id: string }>(
+            `/api/v1/parameterized/import`,
+            "POST",
+            { project_id, test_id, format, data }
+          );
+
+          return {
+            content: [{ type: "text" as const, text: `## Parameters Imported\n\n**Imported:** ${result.imported} row(s)\n**Data Source ID:** \`${result.data_source_id}\`` }],
+          };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_insights_generate - Generate AI insights
+    this.server.tool(
+      "argus_insights_generate",
+      "Generate AI-powered insights about testing quality, trends, and recommended actions.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        focus: z.string().optional().describe("Focus area (e.g., 'flaky', 'coverage', 'performance', 'security')"),
+      },
+      async ({ project_id, focus }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ insights: Array<{ title: string; description: string; severity: string; action: string; category: string }> }>(
+            `/api/v1/insights/generate`,
+            "POST",
+            { project_id, focus }
+          );
+
+          let output = `## AI Insights\n\n`;
+          (result.insights || []).forEach((ins, i) => {
+            const emoji = ins.severity === "critical" ? "🔴" : ins.severity === "warning" ? "🟡" : "🟢";
+            output += `### ${i + 1}. ${emoji} ${ins.title}\n`;
+            output += `**Category:** ${ins.category}\n${ins.description}\n\n**Action:** ${ins.action}\n\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_insights_list - List past insights
+    this.server.tool(
+      "argus_insights_list",
+      "List previously generated insights for a project.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        limit: z.number().optional().describe("Max results"),
+      },
+      async ({ project_id, limit }) => {
+        try {
+          await this.requireAuth();
+          const params = new URLSearchParams({ project_id });
+          if (limit) params.append("limit", String(limit));
+
+          const result = await this.callBrainAPIWithAuth<{ insights: Array<{ id: string; title: string; severity: string; created_at: string; status: string }> }>(
+            `/api/v1/insights?${params.toString()}`,
+            "GET"
+          );
+
+          let output = `## Insights History\n\n`;
+          output += `| # | Title | Severity | Status | Date |\n|---|-------|----------|--------|------|\n`;
+          (result.insights || []).forEach((ins, i) => {
+            output += `| ${i + 1} | ${ins.title.slice(0, 50)} | ${ins.severity} | ${ins.status} | ${new Date(ins.created_at).toLocaleDateString()} |\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_sast_analyze - Run static analysis
+    this.server.tool(
+      "argus_sast_analyze",
+      "Run AI-powered static analysis (SAST) on code to identify security vulnerabilities, code quality issues, and test gaps.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        file_paths: z.array(z.string()).optional().describe("Specific files to analyze"),
+        categories: z.array(z.string()).optional().describe("Analysis categories (e.g., 'security', 'quality', 'testing')"),
+      },
+      async ({ project_id, file_paths, categories }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ findings: Array<{ severity: string; category: string; file: string; line: number; message: string; recommendation: string }>; summary: { critical: number; high: number; medium: number; low: number } }>(
+            `/api/v1/sast/analyze`,
+            "POST",
+            { project_id, file_paths, categories }
+          );
+
+          let output = `## SAST Analysis Results\n\n`;
+          output += `**Summary:** ${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low\n\n`;
+          (result.findings || []).slice(0, 20).forEach((f, i) => {
+            const emoji = f.severity === "critical" ? "🔴" : f.severity === "high" ? "🟠" : f.severity === "medium" ? "🟡" : "🟢";
+            output += `${i + 1}. ${emoji} **${f.category}** in \`${f.file}:${f.line}\`\n   ${f.message}\n   **Fix:** ${f.recommendation}\n\n`;
+          });
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // Tool: argus_sast_scan_pr - Scan a pull request
+    this.server.tool(
+      "argus_sast_scan_pr",
+      "Scan a pull request for security issues, test coverage gaps, and code quality problems.",
+      {
+        project_id: z.string().describe("The project UUID"),
+        pr_number: z.number().describe("Pull request number"),
+        repository: z.string().optional().describe("Repository name (owner/repo)"),
+      },
+      async ({ project_id, pr_number, repository }) => {
+        try {
+          await this.requireAuth();
+          const result = await this.callBrainAPIWithAuth<{ findings: Array<{ severity: string; file: string; line: number; message: string }>; risk_level: string; tests_needed: string[] }>(
+            `/api/v1/sast/scan-pr`,
+            "POST",
+            { project_id, pr_number, repository }
+          );
+
+          let output = `## PR Scan: #${pr_number}\n\n**Risk Level:** ${result.risk_level}\n\n`;
+          if (result.findings?.length) {
+            output += `### Findings (${result.findings.length})\n\n`;
+            result.findings.forEach((f, i) => {
+              output += `${i + 1}. **${f.severity}** \`${f.file}:${f.line}\` — ${f.message}\n`;
+            });
+          }
+          if (result.tests_needed?.length) {
+            output += `\n### Tests Needed\n`;
+            result.tests_needed.forEach(t => { output += `- ${t}\n`; });
+          }
+
+          return { content: [{ type: "text" as const, text: output }] };
+        } catch (error) { return this.handleError(error); }
+      }
+    );
+
+    // =========================================================================
+    // MCP RESOURCES - Contextual data for AI assistants
+    // =========================================================================
+
+    // Resource: argus://projects - List all projects
+    this.server.resource(
+      "projects",
+      "argus://projects",
+      { description: "List of all Argus projects with their configuration and quality status" },
+      async () => {
+        try {
+          const accessToken = await this.getAccessToken();
+          if (!accessToken) {
+            return { contents: [{ uri: "argus://projects", text: "Authentication required. Run argus_auth first.", mimeType: "text/plain" }] };
+          }
+          const result = await this.callBrainAPIWithAuth<ProjectsResponse>(
+            `/api/v1/projects`,
+            "GET"
+          );
+          return {
+            contents: [{
+              uri: "argus://projects",
+              text: JSON.stringify(result.projects || [], null, 2),
+              mimeType: "application/json",
+            }],
+          };
+        } catch (error) {
+          return { contents: [{ uri: "argus://projects", text: `Error: ${error instanceof Error ? error.message : "Unknown"}`, mimeType: "text/plain" }] };
+        }
+      }
+    );
+
+    // Resource: argus://integrations - Connected integrations
+    this.server.resource(
+      "integrations",
+      "argus://integrations",
+      { description: "All connected integration platforms and their sync status" },
+      async () => {
+        try {
+          const accessToken = await this.getAccessToken();
+          if (!accessToken) {
+            return { contents: [{ uri: "argus://integrations", text: "Authentication required.", mimeType: "text/plain" }] };
+          }
+          const result = await this.callBrainAPIWithAuth<{ integrations: unknown[] }>(
+            `/api/v1/integrations`,
+            "GET"
+          );
+          return {
+            contents: [{
+              uri: "argus://integrations",
+              text: JSON.stringify(result.integrations || [], null, 2),
+              mimeType: "application/json",
+            }],
+          };
+        } catch (error) {
+          return { contents: [{ uri: "argus://integrations", text: `Error: ${error instanceof Error ? error.message : "Unknown"}`, mimeType: "text/plain" }] };
+        }
+      }
+    );
+
+    // Resource: argus://schedules - Active schedules
+    this.server.resource(
+      "schedules",
+      "argus://schedules",
+      { description: "All active test schedules with cron configuration and run status" },
+      async () => {
+        try {
+          const accessToken = await this.getAccessToken();
+          if (!accessToken) {
+            return { contents: [{ uri: "argus://schedules", text: "Authentication required.", mimeType: "text/plain" }] };
+          }
+          const result = await this.callBrainAPIWithAuth<{ schedules: unknown[] }>(
+            `/api/v1/schedules`,
+            "GET"
+          );
+          return {
+            contents: [{
+              uri: "argus://schedules",
+              text: JSON.stringify(result.schedules || [], null, 2),
+              mimeType: "application/json",
+            }],
+          };
+        } catch (error) {
+          return { contents: [{ uri: "argus://schedules", text: `Error: ${error instanceof Error ? error.message : "Unknown"}`, mimeType: "text/plain" }] };
+        }
+      }
+    );
+
+    // =========================================================================
+    // MCP PROMPTS - Reusable prompt templates
+    // =========================================================================
+
+    // Prompt: test-plan - Generate a comprehensive test plan
+    this.server.prompt(
+      "test-plan",
+      "Generate a comprehensive E2E test plan for a URL or project, covering critical user flows, edge cases, and priority testing areas.",
+      {
+        url: z.string().optional().describe("Application URL to generate test plan for"),
+        project_id: z.string().optional().describe("Argus project UUID for context"),
+        focus_areas: z.string().optional().describe("Comma-separated areas to focus on (e.g., 'auth, checkout, search')"),
+      },
+      async ({ url, project_id, focus_areas }) => {
+        let context = "";
+        if (project_id) {
+          try {
+            const stats = await this.callBrainAPIWithAuth<BrainQualityStatsResponse>(
+              `/api/v1/quality/stats?project_id=${project_id}`,
+              "GET"
+            );
+            context = `\n\nProject context: ${stats.stats.total_events} events tracked, ${stats.stats.coverage_rate}% coverage, ${stats.stats.total_generated_tests} tests generated.`;
+          } catch { /* ignore if project context unavailable */ }
+        }
+
+        return {
+          messages: [{
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Generate a comprehensive E2E test plan for ${url ? `the application at ${url}` : "the project"}.${context}${focus_areas ? `\n\nFocus areas: ${focus_areas}` : ""}\n\nPlease include:\n1. Critical user flows to test (prioritized)\n2. Edge cases and negative scenarios\n3. API integration tests needed\n4. Accessibility checks\n5. Performance considerations\n6. Mobile/responsive test scenarios\n7. Estimated effort and priority for each test`,
+            },
+          }],
+        };
+      }
+    );
+
+    // Prompt: failure-analysis - Analyze a test failure
+    this.server.prompt(
+      "failure-analysis",
+      "Analyze a test failure with full context including error messages, screenshots, and recent code changes.",
+      {
+        error_message: z.string().describe("The error message from the failed test"),
+        test_name: z.string().optional().describe("Name of the failed test"),
+        project_id: z.string().optional().describe("Project UUID for additional context"),
+        stack_trace: z.string().optional().describe("Full stack trace if available"),
+      },
+      async ({ error_message, test_name, project_id, stack_trace }) => {
+        return {
+          messages: [{
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Analyze this test failure and provide root cause analysis with actionable fixes.\n\n**Test:** ${test_name || "Unknown"}\n**Error:** ${error_message}${stack_trace ? `\n**Stack Trace:**\n\`\`\`\n${stack_trace}\n\`\`\`` : ""}${project_id ? `\n**Project:** ${project_id}` : ""}\n\nPlease provide:\n1. Most likely root cause\n2. Whether this is a test issue or application bug\n3. Specific fix recommendation (with code if possible)\n4. Similar patterns to watch for\n5. Whether self-healing could fix this automatically`,
+            },
+          }],
+        };
+      }
+    );
+
+    // Prompt: coverage-review - Review test coverage gaps
+    this.server.prompt(
+      "coverage-review",
+      "Review test coverage gaps and suggest priority areas for new tests based on risk and usage data.",
+      {
+        project_id: z.string().describe("Project UUID to review"),
+      },
+      async ({ project_id }) => {
+        let context = "";
+        try {
+          const [gaps, risks] = await Promise.all([
+            this.callBrainAPIWithAuth<CoverageGapsResponse>(`/api/v1/quality/coverage-gaps?project_id=${project_id}`, "GET"),
+            this.callBrainAPIWithAuth<BrainRiskScoresResponse>(`/api/v1/quality/risk-scores?project_id=${project_id}`, "GET"),
+          ]);
+          context = `\n\nCoverage gaps found: ${JSON.stringify(gaps.gaps?.slice(0, 5))}\nTop risks: ${JSON.stringify(risks.risk_scores?.slice(0, 5))}`;
+        } catch { /* proceed without context */ }
+
+        return {
+          messages: [{
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Review the test coverage for project ${project_id} and provide recommendations.${context}\n\nPlease provide:\n1. Critical untested areas (highest risk first)\n2. Recommended test types for each gap (E2E, API, unit)\n3. Priority ranking with effort estimates\n4. Quick wins (high value, low effort tests)\n5. Integration points that need testing`,
+            },
+          }],
+        };
+      }
+    );
+
+    // Prompt: deployment-checklist - Pre-deployment testing checklist
+    this.server.prompt(
+      "deployment-checklist",
+      "Generate a pre-deployment testing checklist tailored to the project's stack and recent changes.",
+      {
+        project_id: z.string().describe("Project UUID"),
+        branch: z.string().optional().describe("Branch being deployed"),
+        environment: z.string().optional().describe("Target environment (staging, production)"),
+      },
+      async ({ project_id, branch, environment }) => {
+        return {
+          messages: [{
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Generate a pre-deployment testing checklist for project ${project_id}${branch ? ` (branch: ${branch})` : ""}${environment ? ` targeting ${environment}` : ""}.\n\nPlease include:\n1. Smoke tests (critical path verification)\n2. Regression tests for recently changed areas\n3. Integration verification checklist\n4. Performance baseline checks\n5. Security scan checklist\n6. Accessibility verification\n7. Rollback criteria\n8. Post-deployment monitoring checklist`,
+            },
+          }],
+        };
       }
     );
   }
